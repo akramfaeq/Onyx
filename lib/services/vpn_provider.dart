@@ -426,11 +426,16 @@ class VpnProvider extends ChangeNotifier {
 
     final results = await Future.wait([
       _fetchVpnGate(),
-      _fetchSupabase().catchError((_) => <VpnServer>[]),
+      _fetchSupabase().catchError((e) {
+        debugPrint('❌ Supabase catchError: $e');
+        return <VpnServer>[];
+      }),
     ]);
 
     final vpngateList = results[0];
     final supabaseList = results[1];
+
+    debugPrint('📊 VPNGate: ${vpngateList.length} | Supabase: ${supabaseList.length}');
 
     if (vpngateList.isNotEmpty || supabaseList.isNotEmpty) {
       _applyVpngate(vpngateList);
@@ -579,6 +584,7 @@ class VpnProvider extends ChangeNotifier {
   // ✅ إصلاح ٣: نجيب من Supabase بشكل صحيح
   Future<List<VpnServer>> _fetchSupabase() async {
     try {
+      debugPrint('🔄 Fetching from Supabase...');
       final res = await Supabase.instance.client
           .from('servers')
           .select()
@@ -587,15 +593,20 @@ class VpnProvider extends ChangeNotifier {
           .order('ping', ascending: true)
           .limit(80);
 
-      return (res as List)
+      debugPrint('📦 Supabase raw result count: ${(res as List).length}');
+
+      final servers = (res)
           .map((r) => VpnServer.fromMap(
                 Map<String, dynamic>.from(r),
                 src: ServerSource.supabase,
               ))
           .where((s) => s.ovpnConfig.isNotEmpty)
           .toList();
+
+      debugPrint('✅ Supabase servers after filter: ${servers.length}');
+      return servers;
     } catch (e) {
-      debugPrint('Supabase fetch error: $e');
+      debugPrint('❌ Supabase fetch error: $e');
       return [];
     }
   }

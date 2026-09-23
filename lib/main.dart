@@ -21,7 +21,12 @@ void main() async {
   NotificationService.initialize();
 
   // الباقي بالخلفية ولا يوقف التطبيق
-  try { await SupabaseService.initialize(); } catch (_) {}
+  try {
+    await SupabaseService.initialize();
+    debugPrint('✅ Supabase initialized');
+  } catch (e) {
+    debugPrint('❌ Supabase init error: $e');
+  }
   try { await AdsService.initialize(); } catch (_) {}
 
   final vpnProvider = VpnProvider();
