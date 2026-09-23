@@ -17,7 +17,11 @@ class AdsService {
 
   static bool _ready        = false;
   static bool _loading      = false;
-  static bool _pendingShow  = false; // طلب إعلان وصل قبل ما يكون جاهز
+  static bool _pendingShow  = false;
+
+  // عداد الاتصالات الناجحة — الإعلان يطلع كل اتصالين
+  static int _successCount  = 0;
+  static const int _showEvery = 2;
 
   static Future<void> initialize() async {
     await UnityAds.init(
@@ -26,7 +30,6 @@ class AdsService {
       onComplete: _loadInterstitial,
       onFailed: (e, m) {
         debugPrint('Ads init failed: $m');
-        // نحاول مرة ثانية بعد 5 ثواني
         Future.delayed(const Duration(seconds: 5), initialize);
       },
     );
@@ -41,7 +44,6 @@ class AdsService {
         _ready   = true;
         _loading = false;
         debugPrint('✅ Interstitial loaded');
-        // لو كان في طلب معلق نعرضه فوراً
         if (_pendingShow) {
           _pendingShow = false;
           _show();
@@ -51,7 +53,6 @@ class AdsService {
         _ready   = false;
         _loading = false;
         debugPrint('❌ Interstitial load failed: $msg');
-        // نحاول نعيد التحميل بعد 3 ثواني
         Future.delayed(const Duration(seconds: 3), _loadInterstitial);
       },
     );
@@ -59,7 +60,6 @@ class AdsService {
 
   static void _show() {
     if (!_ready) {
-      // سجل الطلب وانتظر التحميل
       _pendingShow = true;
       _loadInterstitial();
       return;
@@ -82,10 +82,14 @@ class AdsService {
     );
   }
 
-  /// استدعيها بعد كل اتصال ناجح
+  /// استدعيها بعد كل اتصال ناجح — الإعلان يطلع كل اتصالين
   static void showInterstitialAfterSuccess(int successCount) {
-    debugPrint('📢 showInterstitialAfterSuccess called — ready: $_ready');
-    _show();
+    _successCount++;
+    debugPrint('📢 Success #$_successCount — show every $_showEvery');
+    if (_successCount % _showEvery == 0) {
+      debugPrint('🎯 Showing ad now!');
+      _show();
+    }
   }
 }
 
