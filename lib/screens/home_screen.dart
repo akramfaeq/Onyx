@@ -4,6 +4,7 @@ import '../services/vpn_provider.dart';
 import '../services/ads_service.dart';
 import 'servers_screen.dart';
 import 'info_screen.dart';
+import 'debug_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -32,7 +33,23 @@ class HomeScreen extends StatelessWidget {
 }
 
 // ─── Top Bar ──────────────────────────────────────────────────
-class _TopBar extends StatelessWidget {
+class _TopBar extends StatefulWidget {
+  @override
+  State<_TopBar> createState() => _TopBarState();
+}
+
+class _TopBarState extends State<_TopBar> {
+  int _tapCount = 0;
+
+  void _onLogoTap() {
+    _tapCount++;
+    if (_tapCount >= 5) {
+      _tapCount = 0;
+      Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DebugScreen()));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -40,25 +57,28 @@ class _TopBar extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          RichText(
-            text: const TextSpan(children: [
-              TextSpan(
-                text: 'Onyx',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-              TextSpan(
-                text: 'VPN',
-                style: TextStyle(
-                    color: Color(0xFF7B5CF0),
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-            ]),
+          GestureDetector(
+            onTap: _onLogoTap,
+            child: RichText(
+              text: const TextSpan(children: [
+                TextSpan(
+                  text: 'Onyx',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+                TextSpan(
+                  text: 'VPN',
+                  style: TextStyle(
+                      color: Color(0xFF7B5CF0),
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+              ]),
+            ),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
