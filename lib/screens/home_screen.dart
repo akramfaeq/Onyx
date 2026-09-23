@@ -91,12 +91,14 @@ class _MainContent extends StatelessWidget {
         return Column(
           children: [
             const SizedBox(height: 32),
-            _PowerOrb(vpn: vpn),
+            // ✅ إصلاح ٥: الدائرة بس للـ WARP
+            _WarpOrb(vpn: vpn),
             const SizedBox(height: 24),
             _StatusChip(vpn: vpn),
             const SizedBox(height: 28),
             _StatsRow(vpn: vpn),
             const SizedBox(height: 24),
+            // ✅ إصلاح ٣: قائمتان منفصلتان
             _ServersPanel(vpn: vpn),
           ],
         );
@@ -105,16 +107,16 @@ class _MainContent extends StatelessWidget {
   }
 }
 
-// ─── Power Orb ───────────────────────────────────────────────
-class _PowerOrb extends StatefulWidget {
+// ─── WARP Orb (الدائرة الرئيسية — WARP فقط) ──────────────────
+class _WarpOrb extends StatefulWidget {
   final VpnProvider vpn;
-  const _PowerOrb({required this.vpn});
+  const _WarpOrb({required this.vpn});
 
   @override
-  State<_PowerOrb> createState() => _PowerOrbState();
+  State<_WarpOrb> createState() => _WarpOrbState();
 }
 
-class _PowerOrbState extends State<_PowerOrb>
+class _WarpOrbState extends State<_WarpOrb>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _pulse;
@@ -138,46 +140,46 @@ class _PowerOrbState extends State<_PowerOrb>
   @override
   Widget build(BuildContext context) {
     final vpn = widget.vpn;
-    final connected = vpn.isConnected;
-    final connecting = vpn.isConnecting;
-    final reconnecting = vpn.isReconnecting;
+
+    // ✅ إصلاح ٥: الدائرة تعكس حالة WARP فقط
+    final warpConnected = vpn.isConnected && (vpn.selectedServer?.isWarp == true);
+    final warpConnecting = vpn.isConnecting && (vpn.selectedServer?.isWarp == true);
     final loading = vpn.loadingServers;
 
-    final color = connecting || reconnecting
+    final color = warpConnecting
         ? const Color(0xFFF59E0B)
-        : connected
+        : warpConnected
             ? const Color(0xFF10B981)
             : const Color(0xFF7B5CF0);
+
+    // ✅ إصلاح ٤: الدائرة تظل تدور حتى Connected
+    final shouldSpin = warpConnecting;
 
     String label;
     if (loading) {
       label = 'Loading...';
-    } else if (connected) {
+    } else if (warpConnected) {
       label = 'Tap to disconnect';
+    } else if (warpConnecting) {
+      label = 'Connecting...';
     } else {
       label = 'Quick Connect';
     }
 
-    final shouldSpin = connecting || reconnecting;
-
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
-        final scale =
-            (connected || connecting || reconnecting) ? _pulse.value : 1.0;
+        final scale = (warpConnected || warpConnecting) ? _pulse.value : 1.0;
         return Transform.scale(
           scale: scale,
           child: GestureDetector(
             onTap: () {
               if (loading) return;
-              if (connected || connecting || reconnecting) {
+              // ✅ إصلاح ١: الاتصال فقط عند الضغط
+              if (warpConnected || warpConnecting) {
                 vpn.disconnect();
               } else {
-                if (vpn.servers.isEmpty) {
-                  vpn.fetchServers().then((_) => vpn.connectFastest());
-                } else {
-                  vpn.connectFastest();
-                }
+                vpn.connectWarp();
               }
             },
             child: SizedBox(
@@ -186,7 +188,7 @@ class _PowerOrbState extends State<_PowerOrb>
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  if (connected || connecting || reconnecting)
+                  if (warpConnected || warpConnecting)
                     Container(
                       width: 180,
                       height: 180,
@@ -222,7 +224,7 @@ class _PowerOrbState extends State<_PowerOrb>
                       boxShadow: [
                         BoxShadow(
                           color: color.withValues(
-                              alpha: connected ? 0.4 : 0.2),
+                              alpha: warpConnected ? 0.4 : 0.2),
                           blurRadius: 30,
                           spreadRadius: 2,
                         ),
@@ -393,6 +395,7 @@ class _StatCard extends StatelessWidget {
 }
 
 // ─── Servers Panel ───────────────────────────────────────────
+// ✅ إصلاح ٣: قائمتان — Supabase و VPNGate
 class _ServersPanel extends StatefulWidget {
   final VpnProvider vpn;
   const _ServersPanel({required this.vpn});
@@ -408,12 +411,10 @@ class _ServersPanelState extends State<_ServersPanel> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.vpn.servers.isEmpty) widget.vpn.fetchServers();
-    });
-    _scrollController.addListener(() {
-      if (_scrollController.position.pixels >=
-          _scrollController.position.maxScrollExtent - 80) {
-        widget.vpn.loadMore();
+      // ✅ إصلاح ١: فقط نجيب السيرفرات، ما نتصل
+      if (widget.vpn.vpngateServers.isEmpty &&
+          widget.vpn.supabaseServers.isEmpty) {
+        widget.vpn.fetchServers();
       }
     });
   }
@@ -431,7 +432,6 @@ class _ServersPanelState extends State<_ServersPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── عنوان القسم + View All ─────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
@@ -448,68 +448,56 @@ class _ServersPanelState extends State<_ServersPanel> {
                       MaterialPageRoute(
                           builder: (_) => const ServersScreen())),
                   child: const Text('View All',
-                      style: TextStyle(
-                          color: Color(0xFF7B5CF0), fontSize: 12)),
+                      style:
+                          TextStyle(color: Color(0xFF7B5CF0), fontSize: 12)),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 10),
 
-          // ── بطاقة WARP ────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: _WarpCard(vpn: vpn),
-          ),
-          const SizedBox(height: 10),
-
-          // ── قائمة OpenVPN ─────────────────────────────
           Expanded(
             child: vpn.loadingServers
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: Color(0xFF7B5CF0)))
-                : vpn.serversError != null
+                : vpn.serversError != null &&
+                        vpn.vpngateServers.isEmpty &&
+                        vpn.supabaseServers.isEmpty
                     ? _errorView(vpn)
                     : RefreshIndicator(
                         color: const Color(0xFF7B5CF0),
                         backgroundColor: const Color(0xFF12121E),
-                        onRefresh: vpn.fetchServers,
-                        child: ListView.separated(
+                        onRefresh: () => vpn.fetchServers(forceRefresh: true),
+                        child: ListView(
                           controller: _scrollController,
                           padding:
                               const EdgeInsets.symmetric(horizontal: 24),
-                          itemCount: vpn.servers.length +
-                              (vpn.hasMore ? 1 : 0),
-                          separatorBuilder: (_, __) =>
+                          children: [
+                            // ── قسم Supabase (محدّث يومياً) ──
+                            if (vpn.supabaseServers.isNotEmpty) ...[
+                              _SectionHeader(
+                                  title: 'Recommended',
+                                  subtitle: 'Updated daily · Tested'),
                               const SizedBox(height: 8),
-                          itemBuilder: (_, i) {
-                            if (i == vpn.servers.length) {
-                              return const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: Center(
-                                  child: SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Color(0xFF7B5CF0)),
-                                  ),
-                                ),
-                              );
-                            }
-                            final s = vpn.servers[i];
-                            final selected =
-                                vpn.selectedServer?.ip == s.ip &&
-                                    !s.isWarp;
-                            return _ServerTile(
-                              server: s,
-                              selected: selected,
-                              connecting: vpn.isConnecting && selected,
-                              connected: vpn.isConnected && selected,
-                              onTap: () => vpn.connectTo(s),
-                            );
-                          },
+                              ...vpn.supabaseServers
+                                  .take(5)
+                                  .map((s) => _buildTile(s, vpn)),
+                              const SizedBox(height: 16),
+                            ],
+
+                            // ── قسم VPNGate ──
+                            if (vpn.vpngateServers.isNotEmpty) ...[
+                              _SectionHeader(
+                                  title: 'VPN Gate',
+                                  subtitle: 'Live servers'),
+                              const SizedBox(height: 8),
+                              ...vpn.vpngateServers
+                                  .take(8)
+                                  .map((s) => _buildTile(s, vpn)),
+                              const SizedBox(height: 8),
+                            ],
+                          ],
                         ),
                       ),
           ),
@@ -518,11 +506,25 @@ class _ServersPanelState extends State<_ServersPanel> {
     );
   }
 
+  Widget _buildTile(VpnServer s, VpnProvider vpn) {
+    final selected = vpn.selectedServer?.ip == s.ip && !s.isWarp;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: _ServerTile(
+        server: s,
+        selected: selected,
+        connecting: vpn.isConnecting && selected,
+        connected: vpn.isConnected && selected,
+        onTap: () => vpn.connectTo(s),
+      ),
+    );
+  }
+
   Widget _errorView(VpnProvider vpn) {
     return RefreshIndicator(
       color: const Color(0xFF7B5CF0),
       backgroundColor: const Color(0xFF12121E),
-      onRefresh: vpn.fetchServers,
+      onRefresh: () => vpn.fetchServers(forceRefresh: true),
       child: ListView(children: [
         SizedBox(
           height: 180,
@@ -532,7 +534,7 @@ class _ServersPanelState extends State<_ServersPanel> {
               const Icon(Icons.cloud_off_rounded,
                   color: Color(0xFF6B7280), size: 44),
               const SizedBox(height: 10),
-              Text(vpn.serversError!,
+              Text(vpn.serversError ?? 'Error',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                       color: Color(0xFF6B7280), fontSize: 13)),
@@ -548,109 +550,39 @@ class _ServersPanelState extends State<_ServersPanel> {
   }
 }
 
-// ─── WARP Card ───────────────────────────────────────────────
-class _WarpCard extends StatelessWidget {
-  final VpnProvider vpn;
-  const _WarpCard({required this.vpn});
+// ─── Section Header ──────────────────────────────────────────
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  const _SectionHeader({required this.title, required this.subtitle});
 
   @override
   Widget build(BuildContext context) {
-    final isWarpActive =
-        vpn.isConnected && (vpn.selectedServer?.isWarp == true);
-    final isWarpConnecting =
-        vpn.isConnecting && (vpn.selectedServer?.isWarp == true);
-
-    final borderColor = isWarpActive
-        ? const Color(0xFF10B981)
-        : isWarpConnecting
-            ? const Color(0xFFF59E0B)
-            : const Color(0xFF7B5CF0).withValues(alpha: 0.4);
-
-    return GestureDetector(
-      onTap: () {
-        if (isWarpActive || isWarpConnecting) {
-          vpn.disconnect();
-        } else {
-          vpn.connectWarp();
-        }
-      },
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        decoration: BoxDecoration(
-          color: const Color(0xFF0F0F20),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: borderColor, width: 1.5),
+    return Row(
+      children: [
+        Container(
+          width: 3,
+          height: 16,
+          decoration: BoxDecoration(
+            color: const Color(0xFF7B5CF0),
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
-        child: Row(
+        const SizedBox(width: 8),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // أيقونة Cloudflare
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: const Color(0xFF7B5CF0).withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Center(
-                child: Text('🌐', style: TextStyle(fontSize: 20)),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Cloudflare WARP',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600),
-                  ),
-                  Text(
-                    isWarpActive
-                        ? 'Connected · Fast & Secure'
-                        : 'Free · Fast · No logs',
-                    style: TextStyle(
-                        color: isWarpActive
-                            ? const Color(0xFF10B981)
-                            : const Color(0xFF6B7280),
-                        fontSize: 11),
-                  ),
-                ],
-              ),
-            ),
-            // حالة الزر
-            if (isWarpConnecting)
-              const SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: Color(0xFFF59E0B)),
-              )
-            else if (isWarpActive)
-              const Icon(Icons.check_circle_rounded,
-                  color: Color(0xFF10B981), size: 22)
-            else
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF7B5CF0).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'Connect',
-                  style: TextStyle(
-                      color: Color(0xFF7B5CF0),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
+            Text(title,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+            Text(subtitle,
+                style: const TextStyle(
+                    color: Color(0xFF6B7280), fontSize: 10)),
           ],
         ),
-      ),
+      ],
     );
   }
 }
