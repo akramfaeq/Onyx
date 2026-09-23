@@ -426,16 +426,11 @@ class VpnProvider extends ChangeNotifier {
 
     final results = await Future.wait([
       _fetchVpnGate(),
-      _fetchSupabase().catchError((e) {
-        debugPrint('❌ Supabase catchError: $e');
-        return <VpnServer>[];
-      }),
+      _fetchSupabase().catchError((_) => <VpnServer>[]),
     ]);
 
     final vpngateList = results[0];
     final supabaseList = results[1];
-
-    debugPrint('📊 VPNGate: ${vpngateList.length} | Supabase: ${supabaseList.length}');
 
     if (vpngateList.isNotEmpty || supabaseList.isNotEmpty) {
       _applyVpngate(vpngateList);
@@ -583,8 +578,8 @@ class VpnProvider extends ChangeNotifier {
   // ─── Fetch Supabase ────────────────────────────────────────
   // ✅ إصلاح ٣: نجيب من Supabase بشكل صحيح
   Future<List<VpnServer>> _fetchSupabase() async {
+    // ── طريقة ١: Supabase SDK ──
     try {
-      debugPrint('🔄 Fetching from Supabase...');
       final res = await Supabase.instance.client
           .from('servers')
           .select()
@@ -593,9 +588,7 @@ class VpnProvider extends ChangeNotifier {
           .order('ping', ascending: true)
           .limit(80);
 
-      debugPrint('📦 Supabase raw result count: ${(res as List).length}');
-
-      final servers = (res)
+      final servers = (res as List)
           .map((r) => VpnServer.fromMap(
                 Map<String, dynamic>.from(r),
                 src: ServerSource.supabase,
@@ -603,12 +596,39 @@ class VpnProvider extends ChangeNotifier {
           .where((s) => s.ovpnConfig.isNotEmpty)
           .toList();
 
-      debugPrint('✅ Supabase servers after filter: ${servers.length}');
-      return servers;
-    } catch (e) {
-      debugPrint('❌ Supabase fetch error: $e');
-      return [];
-    }
+      if (servers.isNotEmpty) return servers;
+    } catch (_) {}
+
+    // ── طريقة ٢: HTTP مباشر كـ fallback ──
+    try {
+      const supabaseUrl = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
+      const supabaseKey =
+          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
+
+      final uri = Uri.parse(
+        '$supabaseUrl/rest/v1/servers'
+        '?is_active=eq.true&ping=lte.300&order=ping.asc&limit=80',
+      );
+
+      final res = await http.get(uri, headers: {
+        'apikey': supabaseKey,
+        'Authorization': 'Bearer $supabaseKey',
+        'Content-Type': 'application/json',
+      }).timeout(const Duration(seconds: 12));
+
+      if (res.statusCode == 200) {
+        final list = jsonDecode(res.body) as List;
+        return list
+            .map((r) => VpnServer.fromMap(
+                  Map<String, dynamic>.from(r),
+                  src: ServerSource.supabase,
+                ))
+            .where((s) => s.ovpnConfig.isNotEmpty)
+            .toList();
+      }
+    } catch (_) {}
+
+    return [];
   }
 
   @override
