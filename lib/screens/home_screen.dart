@@ -41,26 +41,24 @@ class _TopBar extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           RichText(
-            text: const TextSpan(
-              children: [
-                TextSpan(
-                  text: 'Onyx',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-                TextSpan(
-                  text: 'VPN',
-                  style: TextStyle(
-                      color: Color(0xFF7B5CF0),
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-              ],
-            ),
+            text: const TextSpan(children: [
+              TextSpan(
+                text: 'Onyx',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+              TextSpan(
+                text: 'VPN',
+                style: TextStyle(
+                    color: Color(0xFF7B5CF0),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+            ]),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
@@ -90,15 +88,14 @@ class _MainContent extends StatelessWidget {
       builder: (context, vpn, _) {
         return Column(
           children: [
-            const SizedBox(height: 32),
-            // ✅ إصلاح ٥: الدائرة بس للـ WARP
-            _WarpOrb(vpn: vpn),
-            const SizedBox(height: 24),
-            _StatusChip(vpn: vpn),
             const SizedBox(height: 28),
+            // ✅ الدائرة = Quick Connect (سيرفر عشوائي)
+            _PowerOrb(vpn: vpn),
+            const SizedBox(height: 16),
+            _StatusChip(vpn: vpn),
+            const SizedBox(height: 20),
             _StatsRow(vpn: vpn),
-            const SizedBox(height: 24),
-            // ✅ إصلاح ٣: قائمتان منفصلتان
+            const SizedBox(height: 20),
             _ServersPanel(vpn: vpn),
           ],
         );
@@ -107,16 +104,16 @@ class _MainContent extends StatelessWidget {
   }
 }
 
-// ─── WARP Orb (الدائرة الرئيسية — WARP فقط) ──────────────────
-class _WarpOrb extends StatefulWidget {
+// ─── Power Orb ────────────────────────────────────────────────
+class _PowerOrb extends StatefulWidget {
   final VpnProvider vpn;
-  const _WarpOrb({required this.vpn});
+  const _PowerOrb({required this.vpn});
 
   @override
-  State<_WarpOrb> createState() => _WarpOrbState();
+  State<_PowerOrb> createState() => _PowerOrbState();
 }
 
-class _WarpOrbState extends State<_WarpOrb>
+class _PowerOrbState extends State<_PowerOrb>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _pulse;
@@ -140,91 +137,85 @@ class _WarpOrbState extends State<_WarpOrb>
   @override
   Widget build(BuildContext context) {
     final vpn = widget.vpn;
-
-    // ✅ إصلاح ٥: الدائرة تعكس حالة WARP فقط
-    final warpConnected = vpn.isConnected && (vpn.selectedServer?.isWarp == true);
-    final warpConnecting = vpn.isConnecting && (vpn.selectedServer?.isWarp == true);
+    final connected = vpn.isConnected;
+    final connecting = vpn.isConnecting || vpn.isReconnecting;
     final loading = vpn.loadingServers;
 
-    final color = warpConnecting
+    final color = connecting
         ? const Color(0xFFF59E0B)
-        : warpConnected
+        : connected
             ? const Color(0xFF10B981)
             : const Color(0xFF7B5CF0);
-
-    // ✅ إصلاح ٤: الدائرة تظل تدور حتى Connected
-    final shouldSpin = warpConnecting;
 
     String label;
     if (loading) {
       label = 'Loading...';
-    } else if (warpConnected) {
-      label = 'Tap to disconnect';
-    } else if (warpConnecting) {
+    } else if (connected) {
+      label = 'Tap to\ndisconnect';
+    } else if (connecting) {
       label = 'Connecting...';
     } else {
-      label = 'Quick Connect';
+      label = 'Quick\nConnect';
     }
 
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
-        final scale = (warpConnected || warpConnecting) ? _pulse.value : 1.0;
+        final scale = (connected || connecting) ? _pulse.value : 1.0;
         return Transform.scale(
           scale: scale,
           child: GestureDetector(
+            // ✅ إصلاح ١: الاتصال فقط عند الضغط
             onTap: () {
               if (loading) return;
-              // ✅ إصلاح ١: الاتصال فقط عند الضغط
-              if (warpConnected || warpConnecting) {
+              if (connected || connecting) {
                 vpn.disconnect();
               } else {
-                vpn.connectWarp();
+                vpn.connectFastest();
               }
             },
             child: SizedBox(
-              width: 180,
-              height: 180,
+              width: 170,
+              height: 170,
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  if (warpConnected || warpConnecting)
+                  if (connected || connecting)
                     Container(
-                      width: 180,
-                      height: 180,
+                      width: 170,
+                      height: 170,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(
-                            color: color.withValues(alpha: 0.15),
-                            width: 20),
+                            color: color.withValues(alpha: 0.12), width: 18),
                       ),
                     ),
                   Container(
-                    width: 150,
-                    height: 150,
+                    width: 142,
+                    height: 142,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       border: Border.all(
                           color: color.withValues(alpha: 0.25), width: 2),
                     ),
                   ),
-                  if (shouldSpin)
+                  if (connecting)
                     SizedBox(
-                      width: 150,
-                      height: 150,
+                      width: 142,
+                      height: 142,
                       child: CircularProgressIndicator(
                           color: color, strokeWidth: 2),
                     ),
                   Container(
-                    width: 116,
-                    height: 116,
+                    width: 110,
+                    height: 110,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
                       color: const Color(0xFF12121E),
                       boxShadow: [
                         BoxShadow(
                           color: color.withValues(
-                              alpha: warpConnected ? 0.4 : 0.2),
+                              alpha: connected ? 0.4 : 0.2),
                           blurRadius: 30,
                           spreadRadius: 2,
                         ),
@@ -234,15 +225,16 @@ class _WarpOrbState extends State<_WarpOrb>
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Icon(Icons.power_settings_new_rounded,
-                            size: 40, color: color),
+                            size: 36, color: color),
                         const SizedBox(height: 4),
                         Text(
                           label,
                           textAlign: TextAlign.center,
                           style: TextStyle(
-                            color: color.withValues(alpha: 0.8),
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
+                            color: color.withValues(alpha: 0.85),
+                            fontSize: 9,
+                            fontWeight: FontWeight.w600,
+                            height: 1.3,
                           ),
                         ),
                       ],
@@ -266,10 +258,9 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = vpn.isConnected;
-    final connecting = vpn.isConnecting;
-    final reconnecting = vpn.isReconnecting;
+    final connecting = vpn.isConnecting || vpn.isReconnecting;
 
-    final color = connecting || reconnecting
+    final color = connecting
         ? const Color(0xFFF59E0B)
         : connected
             ? const Color(0xFF10B981)
@@ -281,9 +272,8 @@ class _StatusChip extends StatelessWidget {
             ? vpn.statusMessage
             : 'Not Connected';
 
-    final flag = (connected || connecting || reconnecting)
-        ? vpn.selectedServer?.flag ?? ''
-        : '';
+    final flag =
+        (connected || connecting) ? vpn.selectedServer?.flag ?? '' : '';
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -395,7 +385,6 @@ class _StatCard extends StatelessWidget {
 }
 
 // ─── Servers Panel ───────────────────────────────────────────
-// ✅ إصلاح ٣: قائمتان — Supabase و VPNGate
 class _ServersPanel extends StatefulWidget {
   final VpnProvider vpn;
   const _ServersPanel({required this.vpn});
@@ -405,24 +394,16 @@ class _ServersPanel extends StatefulWidget {
 }
 
 class _ServersPanelState extends State<_ServersPanel> {
-  final _scrollController = ScrollController();
-
   @override
   void initState() {
     super.initState();
+    // ✅ إصلاح ١: فقط نجيب السيرفرات بدون اتصال تلقائي
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // ✅ إصلاح ١: فقط نجيب السيرفرات، ما نتصل
-      if (widget.vpn.vpngateServers.isEmpty &&
-          widget.vpn.supabaseServers.isEmpty) {
-        widget.vpn.fetchServers();
+      final vpn = widget.vpn;
+      if (vpn.vpngateServers.isEmpty && vpn.supabaseServers.isEmpty) {
+        vpn.fetchServers();
       }
     });
-  }
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
   }
 
   @override
@@ -448,33 +429,30 @@ class _ServersPanelState extends State<_ServersPanel> {
                       MaterialPageRoute(
                           builder: (_) => const ServersScreen())),
                   child: const Text('View All',
-                      style:
-                          TextStyle(color: Color(0xFF7B5CF0), fontSize: 12)),
+                      style: TextStyle(
+                          color: Color(0xFF7B5CF0), fontSize: 12)),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 10),
-
           Expanded(
             child: vpn.loadingServers
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: Color(0xFF7B5CF0)))
-                : vpn.serversError != null &&
-                        vpn.vpngateServers.isEmpty &&
-                        vpn.supabaseServers.isEmpty
-                    ? _errorView(vpn)
+                : (vpn.vpngateServers.isEmpty && vpn.supabaseServers.isEmpty)
+                    ? _emptyView(vpn)
                     : RefreshIndicator(
                         color: const Color(0xFF7B5CF0),
                         backgroundColor: const Color(0xFF12121E),
-                        onRefresh: () => vpn.fetchServers(forceRefresh: true),
+                        onRefresh: () =>
+                            vpn.fetchServers(forceRefresh: true),
                         child: ListView(
-                          controller: _scrollController,
                           padding:
                               const EdgeInsets.symmetric(horizontal: 24),
                           children: [
-                            // ── قسم Supabase (محدّث يومياً) ──
+                            // ── قسم Recommended (Supabase) ──
                             if (vpn.supabaseServers.isNotEmpty) ...[
                               _SectionHeader(
                                   title: 'Recommended',
@@ -485,8 +463,7 @@ class _ServersPanelState extends State<_ServersPanel> {
                                   .map((s) => _buildTile(s, vpn)),
                               const SizedBox(height: 16),
                             ],
-
-                            // ── قسم VPNGate ──
+                            // ── قسم VPN Gate ──
                             if (vpn.vpngateServers.isNotEmpty) ...[
                               _SectionHeader(
                                   title: 'VPN Gate',
@@ -495,7 +472,6 @@ class _ServersPanelState extends State<_ServersPanel> {
                               ...vpn.vpngateServers
                                   .take(8)
                                   .map((s) => _buildTile(s, vpn)),
-                              const SizedBox(height: 8),
                             ],
                           ],
                         ),
@@ -507,7 +483,7 @@ class _ServersPanelState extends State<_ServersPanel> {
   }
 
   Widget _buildTile(VpnServer s, VpnProvider vpn) {
-    final selected = vpn.selectedServer?.ip == s.ip && !s.isWarp;
+    final selected = vpn.selectedServer?.ip == s.ip;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: _ServerTile(
@@ -520,30 +496,28 @@ class _ServersPanelState extends State<_ServersPanel> {
     );
   }
 
-  Widget _errorView(VpnProvider vpn) {
+  Widget _emptyView(VpnProvider vpn) {
     return RefreshIndicator(
       color: const Color(0xFF7B5CF0),
       backgroundColor: const Color(0xFF12121E),
       onRefresh: () => vpn.fetchServers(forceRefresh: true),
       child: ListView(children: [
-        SizedBox(
-          height: 180,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.cloud_off_rounded,
-                  color: Color(0xFF6B7280), size: 44),
-              const SizedBox(height: 10),
-              Text(vpn.serversError ?? 'Error',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: Color(0xFF6B7280), fontSize: 13)),
-              const SizedBox(height: 6),
-              const Text('Pull down to retry',
-                  style:
-                      TextStyle(color: Color(0xFF7B5CF0), fontSize: 12)),
-            ],
-          ),
+        const SizedBox(height: 60),
+        Column(
+          children: [
+            const Icon(Icons.cloud_off_rounded,
+                color: Color(0xFF6B7280), size: 44),
+            const SizedBox(height: 10),
+            Text(
+              vpn.serversError ?? 'No servers found.',
+              textAlign: TextAlign.center,
+              style:
+                  const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
+            ),
+            const SizedBox(height: 6),
+            const Text('Pull down to retry',
+                style: TextStyle(color: Color(0xFF7B5CF0), fontSize: 12)),
+          ],
         ),
       ]),
     );

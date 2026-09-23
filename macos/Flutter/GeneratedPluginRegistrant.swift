@@ -8,11 +8,9 @@ import Foundation
 import app_links
 import shared_preferences_foundation
 import url_launcher_macos
-import wireguard_flutter
 
 func RegisterGeneratedPlugins(registry: FlutterPluginRegistry) {
   AppLinksMacosPlugin.register(with: registry.registrar(forPlugin: "AppLinksMacosPlugin"))
   SharedPreferencesPlugin.register(with: registry.registrar(forPlugin: "SharedPreferencesPlugin"))
   UrlLauncherPlugin.register(with: registry.registrar(forPlugin: "UrlLauncherPlugin"))
-  WireguardFlutterPlugin.register(with: registry.registrar(forPlugin: "WireguardFlutterPlugin"))
 }

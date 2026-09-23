@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:csv/csv.dart';
 import 'package:openvpn_flutter/openvpn_flutter.dart';
-import 'package:wireguard_flutter/wireguard_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
@@ -21,25 +20,8 @@ String formatSpeed(String raw) {
   return '${num.toStringAsFixed(0)} B/s';
 }
 
-// ─── Server Protocol ───────────────────────────────────────────
-enum ServerProtocol { openvpn, warp }
-
-// ─── Server Source (للتمييز بين VPNGate و Supabase) ───────────
+// ─── Server Source ────────────────────────────────────────────
 enum ServerSource { vpngate, supabase }
-
-// ─── WARP Config ──────────────────────────────────────────────
-const _warpConfig = '''
-[Interface]
-PrivateKey = PLACEHOLDER_WILL_BE_GENERATED
-Address = 172.16.0.2/32
-DNS = 1.1.1.1, 1.0.0.1
-
-[Peer]
-PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = engage.cloudflareclient.com:2408
-PersistentKeepalive = 25
-''';
 
 // ─── VpnServer ────────────────────────────────────────────────
 class VpnServer {
@@ -49,7 +31,6 @@ class VpnServer {
   final int ping;
   final String ovpnConfig;
   final int numSessions;
-  final ServerProtocol protocol;
   final ServerSource source;
 
   const VpnServer({
@@ -59,23 +40,8 @@ class VpnServer {
     required this.ping,
     required this.ovpnConfig,
     this.numSessions = 0,
-    this.protocol = ServerProtocol.openvpn,
     this.source = ServerSource.vpngate,
   });
-
-  static VpnServer get warp => const VpnServer(
-        countryName: 'Cloudflare WARP',
-        countryCode: 'CF',
-        ip: 'engage.cloudflareclient.com',
-        ping: 20,
-        ovpnConfig: '',
-        numSessions: 0,
-        protocol: ServerProtocol.warp,
-        source: ServerSource.vpngate,
-      );
-
-  bool get isWarp => protocol == ServerProtocol.warp;
-  bool get isFromSupabase => source == ServerSource.supabase;
 
   int get score {
     final congestion = (numSessions / 10).clamp(0, 200).toInt();
@@ -83,7 +49,6 @@ class VpnServer {
   }
 
   String get flag {
-    if (countryCode == 'CF') return '🌐';
     if (countryCode.length != 2) return '🌐';
     return countryCode.toUpperCase().split('').map(
       (c) => String.fromCharCode(c.codeUnitAt(0) + 127397),
@@ -91,7 +56,6 @@ class VpnServer {
   }
 
   String get pingLabel {
-    if (isWarp) return 'Fast & Secure';
     if (ping < 60) return 'Excellent';
     if (ping < 120) return 'Good';
     if (ping < 200) return 'Fair';
@@ -99,7 +63,6 @@ class VpnServer {
   }
 
   int get bars {
-    if (isWarp) return 4;
     if (ping < 60) return 4;
     if (ping < 120) return 3;
     if (ping < 200) return 2;
@@ -113,25 +76,29 @@ class VpnServer {
     'ping': ping,
     'ovpn_config': ovpnConfig,
     'num_sessions': numSessions,
-    'protocol': protocol.name,
     'source': source.name,
   };
 
-  factory VpnServer.fromMap(Map<String, dynamic> m, {ServerSource src = ServerSource.vpngate}) => VpnServer(
-    countryName: cleanCountryName(m['country_name'] ?? ''),
-    countryCode: m['country_code'] ?? '',
-    ip: m['ip'] ?? '',
-    ping: (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig: m['ovpn_config'] ?? '',
-    numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
-    protocol: m['protocol'] == 'warp' ? ServerProtocol.warp : ServerProtocol.openvpn,
-    source: src,
-  );
+  factory VpnServer.fromMap(Map<String, dynamic> m,
+      {ServerSource src = ServerSource.vpngate}) =>
+      VpnServer(
+        countryName: cleanCountryName(m['country_name'] ?? ''),
+        countryCode: m['country_code'] ?? '',
+        ip: m['ip'] ?? '',
+        ping: (m['ping'] as num?)?.toInt() ?? 999,
+        ovpnConfig: m['ovpn_config'] ?? '',
+        numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
+        source: m['source'] == 'supabase'
+            ? ServerSource.supabase
+            : (src == ServerSource.supabase
+                ? ServerSource.supabase
+                : ServerSource.vpngate),
+      );
 }
 
 // ─── VpnProvider ──────────────────────────────────────────────
 class VpnProvider extends ChangeNotifier {
-  // قائمتان منفصلتان
+  // ✅ قائمتان منفصلتان
   final List<VpnServer> _vpngateServers = [];
   final List<VpnServer> _supabaseServers = [];
 
@@ -139,13 +106,7 @@ class VpnProvider extends ChangeNotifier {
   List<VpnServer> get supabaseServers => _supabaseServers;
 
   // للتوافق مع الكود القديم
-  List<VpnServer> get servers => _vpngateServers;
-  int get totalServers => _vpngateServers.length + _supabaseServers.length;
-
-  bool _hasMore = false;
-  bool get hasMore => _hasMore;
-  bool _loadingMore = false;
-  bool get loadingMore => _loadingMore;
+  List<VpnServer> get servers => [..._supabaseServers, ..._vpngateServers];
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -158,16 +119,12 @@ class VpnProvider extends ChangeNotifier {
 
   VPNStage _stage = VPNStage.disconnected;
 
-  bool get isConnected => _stage == VPNStage.connected || _warpConnected;
+  bool get isConnected => _stage == VPNStage.connected;
   bool get isConnecting =>
       _stage == VPNStage.connecting ||
       _stage == VPNStage.authenticating ||
       _stage == VPNStage.vpn_generate_config ||
-      _stage == VPNStage.prepare ||
-      _warpConnecting;
-
-  bool _warpConnected = false;
-  bool _warpConnecting = false;
+      _stage == VPNStage.prepare;
 
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
@@ -184,7 +141,6 @@ class VpnProvider extends ChangeNotifier {
   Timer? _reconnectTimer;
 
   OpenVPN? _vpn;
-  final _wg = WireGuardFlutter.instance;
 
   VpnServer? _lastSuccessfulServer;
   final List<String> _triedIps = [];
@@ -198,18 +154,15 @@ class VpnProvider extends ChangeNotifier {
   static const int _timeoutSeconds = 20;
   static const int _pageSize = 20;
 
+  // ✅ إصلاح ١: ما نتصل تلقائياً — بس نهيئ OpenVPN
   VpnProvider() {
     _initOpenVpn();
-    // ✅ إصلاح ١: لا نتصل تلقائياً عند البداية
   }
 
   // ─── Init OpenVPN ──────────────────────────────────────────
   void _initOpenVpn() {
     _vpn = OpenVPN(
       onVpnStageChanged: (stage, _) {
-        // ✅ إصلاح ٢: تجاهل أحداث OpenVPN لو WARP شغّال
-        if (_selected?.isWarp == true) return;
-
         _stage = stage;
 
         if (stage == VPNStage.connected) {
@@ -228,6 +181,7 @@ class VpnProvider extends ChangeNotifier {
           _connectedAt = DateTime.now();
           _startStats();
           AdsService.showInterstitialAfterSuccess(1);
+
         } else if (stage == VPNStage.disconnected) {
           _connectionTimeout?.cancel();
           _stopStats();
@@ -236,11 +190,12 @@ class VpnProvider extends ChangeNotifier {
             _isReconnecting = false;
             _statusMessage = '';
           } else if (!_isSwitchingServer) {
-            // ✅ إصلاح ٤: الاتصال الذكي — يكمّل حتى Connected
+            // ✅ إصلاح ٤: يكمل يجرب حتى يتصل
             _isReconnecting = true;
             _statusMessage = 'Connecting...';
             _scheduleReconnect();
           }
+
         } else if (stage == VPNStage.connecting) {
           _statusMessage = 'Connecting...';
         } else if (stage == VPNStage.authenticating) {
@@ -252,7 +207,7 @@ class VpnProvider extends ChangeNotifier {
         notifyListeners();
       },
       onVpnStatusChanged: (status) {
-        if (status != null && _selected?.isWarp != true) {
+        if (status != null) {
           _downloadSpeed = formatSpeed(status.byteIn ?? '0');
           _uploadSpeed = formatSpeed(status.byteOut ?? '0');
           notifyListeners();
@@ -267,77 +222,9 @@ class VpnProvider extends ChangeNotifier {
     );
   }
 
-  // ─── WARP Connect ──────────────────────────────────────────
-  // ✅ إصلاح ٢: WARP منفصل تماماً عن OpenVPN — لا تضارب
-  Future<void> connectWarp() async {
-    // قطع OpenVPN إذا شغّال
-    if (_stage != VPNStage.disconnected) {
-      _isSwitchingServer = true;
-      _vpn?.disconnect();
-      await Future.delayed(const Duration(milliseconds: 500));
-      _stage = VPNStage.disconnected;
-      _isSwitchingServer = false;
-    }
-
-    // قطع WARP القديم إذا شغّال
-    if (_warpConnected || _warpConnecting) {
-      await _disconnectWarp();
-      await Future.delayed(const Duration(milliseconds: 300));
-    }
-
-    _userDisconnected = false;
-    _selected = VpnServer.warp;
-    _warpConnecting = true;
-    _warpConnected = false;
-    _statusMessage = 'Connecting...';
-    notifyListeners();
-
-    try {
-      await _wg.initialize(interfaceName: 'warp0');
-      await _wg.startVpn(
-        serverAddress: 'engage.cloudflareclient.com',
-        wgQuickConfig: _warpConfig,
-        providerBundleIdentifier: 'com.onyxvpn.onyx_vpn',
-      );
-
-      _warpConnecting = false;
-      _warpConnected = true;
-      _statusMessage = '';
-      _connectedAt = DateTime.now();
-      _startStats();
-      AdsService.showInterstitialAfterSuccess(1);
-      notifyListeners();
-    } catch (e) {
-      _warpConnecting = false;
-      _warpConnected = false;
-      _selected = null;
-      _statusMessage = '';
-      notifyListeners();
-    }
-  }
-
-  Future<void> _disconnectWarp() async {
-    try {
-      await _wg.stopVpn();
-    } catch (_) {}
-    _warpConnected = false;
-    _warpConnecting = false;
-    _stopStats();
-  }
-
-  // ─── Connect To ────────────────────────────────────────────
-  Future<void> connectTo(VpnServer server, {bool isAutoReconnect = false}) async {
-    if (server.isWarp) {
-      await connectWarp();
-      return;
-    }
-
-    // ✅ إصلاح ٢: قطع WARP أولاً إذا شغّال
-    if (_warpConnected || _warpConnecting) {
-      await _disconnectWarp();
-      await Future.delayed(const Duration(milliseconds: 300));
-    }
-
+  // ─── Connect To (OpenVPN فقط) ──────────────────────────────
+  Future<void> connectTo(VpnServer server,
+      {bool isAutoReconnect = false}) async {
     if (isConnected || isConnecting) {
       _userDisconnected = false;
       _isSwitchingServer = true;
@@ -358,7 +245,7 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
 
     if (server.ovpnConfig.isEmpty) {
-      _tryNextServer(server);
+      _tryNextServer();
       return;
     }
 
@@ -377,7 +264,7 @@ class VpnProvider extends ChangeNotifier {
           _stage = VPNStage.prepare;
           _statusMessage = 'Connecting...';
           notifyListeners();
-          _tryNextServer(server);
+          _tryNextServer();
         }
       },
     );
@@ -395,13 +282,30 @@ class VpnProvider extends ChangeNotifier {
       _connectionTimeout?.cancel();
       _statusMessage = '';
       notifyListeners();
-      _tryNextServer(server);
+      _tryNextServer();
     }
   }
 
-  // ✅ إصلاح ٥: الدائرة للـ WARP فقط
+  // ✅ إصلاح ٥: الدائرة = سيرفر عشوائي من أفضل السيرفرات
   Future<void> connectFastest() async {
-    await connectWarp();
+    final all = [..._supabaseServers, ..._vpngateServers]
+        .where((s) => s.ovpnConfig.isNotEmpty)
+        .toList();
+
+    if (all.isEmpty) {
+      await fetchServers();
+      final retried = [..._supabaseServers, ..._vpngateServers]
+          .where((s) => s.ovpnConfig.isNotEmpty)
+          .toList();
+      if (retried.isNotEmpty) {
+        await connectTo(retried.first);
+      }
+      return;
+    }
+
+    // اختار أفضل سيرفر (أقل ping)
+    all.sort((a, b) => a.score.compareTo(b.score));
+    await connectTo(all.first);
   }
 
   // ─── Disconnect ────────────────────────────────────────────
@@ -413,12 +317,7 @@ class VpnProvider extends ChangeNotifier {
     _connectionTimeout?.cancel();
     _triedIps.clear();
 
-    if (_warpConnected || _warpConnecting) {
-      await _disconnectWarp();
-    } else {
-      _vpn?.disconnect();
-    }
-
+    _vpn?.disconnect();
     _stage = VPNStage.disconnected;
     _selected = null;
     _statusMessage = '';
@@ -427,15 +326,14 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Try Next Server ───────────────────────────────────────
-  // ✅ إصلاح ٤: يجرب كل السيرفرات (VPNGate + Supabase)
-  Future<void> _tryNextServer(VpnServer failed) async {
-    final allOpenvpn = [..._vpngateServers, ..._supabaseServers]
-        .where((s) => !s.isWarp && s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
+  Future<void> _tryNextServer() async {
+    final all = [..._supabaseServers, ..._vpngateServers]
+        .where((s) => s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
         .take(1)
         .toList();
 
-    if (allOpenvpn.isNotEmpty) {
-      await connectTo(allOpenvpn.first);
+    if (all.isNotEmpty) {
+      await connectTo(all.first);
     } else {
       _triedIps.clear();
       _stage = VPNStage.disconnected;
@@ -455,24 +353,26 @@ class VpnProvider extends ChangeNotifier {
         return;
       }
 
-      final allOpenvpn = [..._vpngateServers, ..._supabaseServers]
-          .where((s) => !s.isWarp && s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
+      final all = [..._supabaseServers, ..._vpngateServers]
+          .where((s) => s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
           .take(1)
           .toList();
 
-      if (allOpenvpn.isNotEmpty) {
-        _selected = allOpenvpn.first;
+      if (all.isNotEmpty) {
+        _selected = all.first;
         _stage = VPNStage.prepare;
         _statusMessage = 'Connecting...';
         notifyListeners();
-        await connectTo(allOpenvpn.first, isAutoReconnect: true);
+        await connectTo(all.first, isAutoReconnect: true);
       } else {
         _triedIps.clear();
         final restart = _lastSuccessfulServer ?? _selected;
-        if (restart != null && !restart.isWarp) {
+        if (restart != null) {
           await connectTo(restart, isAutoReconnect: true);
         } else {
-          await connectWarp();
+          _isReconnecting = false;
+          _statusMessage = '';
+          notifyListeners();
         }
       }
     });
@@ -504,17 +404,6 @@ class VpnProvider extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  // ─── Load More ─────────────────────────────────────────────
-  Future<void> loadMore() async {
-    if (_loadingMore || !_hasMore) return;
-    _loadingMore = true;
-    notifyListeners();
-    await Future.delayed(const Duration(milliseconds: 100));
-    _hasMore = false;
-    _loadingMore = false;
-    notifyListeners();
-  }
-
   // ─── Fetch Servers ─────────────────────────────────────────
   Future<void> fetchServers({bool forceRefresh = false}) async {
     _serversError = null;
@@ -522,7 +411,7 @@ class VpnProvider extends ChangeNotifier {
     if (!forceRefresh) {
       final cached = CacheService.getCachedServers();
       if (cached != null && cached.isNotEmpty) {
-        _applyServersFromCache(cached);
+        _applyCached(cached);
         _loadingServers = false;
         notifyListeners();
         if (!CacheService.isCacheValid) _backgroundRefresh();
@@ -533,7 +422,6 @@ class VpnProvider extends ChangeNotifier {
     _loadingServers = true;
     _vpngateServers.clear();
     _supabaseServers.clear();
-    _hasMore = false;
     notifyListeners();
 
     final results = await Future.wait([
@@ -545,11 +433,14 @@ class VpnProvider extends ChangeNotifier {
     final supabaseList = results[1];
 
     if (vpngateList.isNotEmpty || supabaseList.isNotEmpty) {
-      _applyVpngateServers(vpngateList);
-      _applySupabaseServers(supabaseList);
+      _applyVpngate(vpngateList);
+      _applySupabase(supabaseList);
 
-      final allForCache = [..._vpngateServers, ..._supabaseServers];
-      await CacheService.saveServers(allForCache.map((s) => s.toMap()).toList());
+      final allForCache = [
+        ..._supabaseServers.map((s) => {...s.toMap(), 'source': 'supabase'}),
+        ..._vpngateServers.map((s) => {...s.toMap(), 'source': 'vpngate'}),
+      ];
+      await CacheService.saveServers(allForCache);
     } else {
       _serversError = 'Could not fetch servers. Pull down to retry.';
     }
@@ -564,35 +455,42 @@ class VpnProvider extends ChangeNotifier {
         _fetchVpnGate(),
         _fetchSupabase().catchError((_) => <VpnServer>[]),
       ]);
-      _applyVpngateServers(results[0]);
-      _applySupabaseServers(results[1]);
-      final allForCache = [..._vpngateServers, ..._supabaseServers];
-      await CacheService.saveServers(allForCache.map((s) => s.toMap()).toList());
+      _applyVpngate(results[0]);
+      _applySupabase(results[1]);
+      final allForCache = [
+        ..._supabaseServers.map((s) => {...s.toMap(), 'source': 'supabase'}),
+        ..._vpngateServers.map((s) => {...s.toMap(), 'source': 'vpngate'}),
+      ];
+      await CacheService.saveServers(allForCache);
       notifyListeners();
     } catch (_) {}
   }
 
-  void _applyServersFromCache(List<Map<String, dynamic>> cached) {
+  void _applyCached(List<Map<String, dynamic>> cached) {
     _vpngateServers.clear();
     _supabaseServers.clear();
     for (final m in cached) {
-      final src = m['source'] == 'supabase' ? ServerSource.supabase : ServerSource.vpngate;
+      final src = m['source'] == 'supabase'
+          ? ServerSource.supabase
+          : ServerSource.vpngate;
       final s = VpnServer.fromMap(m, src: src);
-      if (s.isWarp || s.ovpnConfig.isEmpty || s.ping > 300) continue;
+      if (s.ovpnConfig.isEmpty || s.ping > 300) continue;
       if (src == ServerSource.supabase) {
         _supabaseServers.add(s);
       } else {
         _vpngateServers.add(s);
       }
     }
-    _sortList(_vpngateServers);
-    _sortList(_supabaseServers);
+    _sortAndLimit(_vpngateServers);
+    _sortAndLimit(_supabaseServers);
   }
 
-  void _applyVpngateServers(List<VpnServer> list) {
+  void _applyVpngate(List<VpnServer> list) {
     _vpngateServers.clear();
-    final filtered = list.where((s) => !s.isWarp && s.ping <= 300 && s.ovpnConfig.isNotEmpty).toList();
-    _sortList(filtered);
+    final filtered = list
+        .where((s) => s.ping <= 300 && s.ovpnConfig.isNotEmpty)
+        .toList();
+    _sortAndLimit(filtered);
     final seenIps = <String>{};
     final countryCount = <String, int>{};
     for (final s in filtered) {
@@ -606,10 +504,12 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  void _applySupabaseServers(List<VpnServer> list) {
+  void _applySupabase(List<VpnServer> list) {
     _supabaseServers.clear();
-    final filtered = list.where((s) => !s.isWarp && s.ping <= 300 && s.ovpnConfig.isNotEmpty).toList();
-    _sortList(filtered);
+    final filtered = list
+        .where((s) => s.ping <= 300 && s.ovpnConfig.isNotEmpty)
+        .toList();
+    _sortAndLimit(filtered);
     final seenIps = <String>{};
     for (final s in filtered) {
       if (seenIps.contains(s.ip)) continue;
@@ -618,7 +518,7 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  void _sortList(List<VpnServer> list) {
+  void _sortAndLimit(List<VpnServer> list) {
     list.sort((a, b) {
       final aTrusted = _trustedIps.contains(a.ip);
       final bTrusted = _trustedIps.contains(b.ip);
@@ -637,10 +537,9 @@ class VpnProvider extends ChangeNotifier {
 
     for (final url in urls) {
       try {
-        final res = await http.get(
-          Uri.parse(url),
-          headers: {'User-Agent': 'Mozilla/5.0'},
-        ).timeout(const Duration(seconds: 12));
+        final res = await http
+            .get(Uri.parse(url), headers: {'User-Agent': 'Mozilla/5.0'})
+            .timeout(const Duration(seconds: 12));
 
         if (res.statusCode != 200) continue;
 
@@ -658,7 +557,6 @@ class VpnProvider extends ChangeNotifier {
             final name = cleanCountryName(r[5].toString());
             if (name.isEmpty) continue;
             final sessions = int.tryParse(r[7].toString()) ?? 0;
-
             result.add(VpnServer(
               countryName: name,
               countryCode: r[6].toString().toUpperCase(),
@@ -678,15 +576,28 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Fetch Supabase ────────────────────────────────────────
+  // ✅ إصلاح ٣: نجيب من Supabase بشكل صحيح
   Future<List<VpnServer>> _fetchSupabase() async {
-    final res = await Supabase.instance.client
-        .from('servers')
-        .select()
-        .eq('is_active', true)
-        .lte('ping', 300)
-        .order('ping', ascending: true)
-        .limit(80);
-    return (res as List).map((r) => VpnServer.fromMap(r, src: ServerSource.supabase)).toList();
+    try {
+      final res = await Supabase.instance.client
+          .from('servers')
+          .select()
+          .eq('is_active', true)
+          .lte('ping', 300)
+          .order('ping', ascending: true)
+          .limit(80);
+
+      return (res as List)
+          .map((r) => VpnServer.fromMap(
+                Map<String, dynamic>.from(r),
+                src: ServerSource.supabase,
+              ))
+          .where((s) => s.ovpnConfig.isNotEmpty)
+          .toList();
+    } catch (e) {
+      debugPrint('Supabase fetch error: $e');
+      return [];
+    }
   }
 
   @override

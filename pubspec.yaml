@@ -15,7 +15,6 @@ dependencies:
   shared_preferences: ^2.2.2
   unity_ads_plugin: ^0.5.0
   openvpn_flutter: ^1.3.3
-  wireguard_flutter: ^0.1.3
   hive_flutter: ^1.1.0
   hive: ^2.2.3
 
@@ -36,4 +35,3 @@ flutter:
   uses-material-design: true
   assets:
     - assets/
-  
