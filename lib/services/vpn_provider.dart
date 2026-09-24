@@ -2,11 +2,30 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:openvpn_flutter/openvpn_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
+
+// ─── Notification Channel ─────────────────────────────────────
+const _notifChannel = MethodChannel('com.onyxvpn.notification');
+
+Future<void> _showNotification(String serverName, int ping) async {
+  try {
+    await _notifChannel.invokeMethod('show', {
+      'server_name': serverName,
+      'ping': ping,
+    });
+  } catch (_) {}
+}
+
+Future<void> _hideNotification() async {
+  try {
+    await _notifChannel.invokeMethod('hide');
+  } catch (_) {}
+}
 
 // ─── helpers ──────────────────────────────────────────────────
 String cleanCountryName(String raw) =>
@@ -169,6 +188,7 @@ class VpnProvider extends ChangeNotifier {
           _connectionTimeout?.cancel();
           _connState = ConnectionState.connected;
           _statusMessage = '';
+          _triedServers.clear(); // ريست عند النجاح
 
           if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
             _trustedIps.insert(0, _selected!.ip);
@@ -177,6 +197,11 @@ class VpnProvider extends ChangeNotifier {
           _connectedAt = DateTime.now();
           _startStats();
           AdsService.showInterstitialAfterSuccess(1);
+          // ✅ أظهر إشعار مخصص
+          _showNotification(
+            _selected?.countryName ?? 'VPN',
+            _selected?.effectivePing ?? -1,
+          );
           notifyListeners();
 
         } else if (stage == VPNStage.disconnected) {
@@ -193,15 +218,13 @@ class VpnProvider extends ChangeNotifier {
                 _connState = ConnectionState.disconnected;
                 _statusMessage = '';
               } else if (_connState == ConnectionState.loading) {
-                // ✅ إصلاح ٤: حالة فشل صريحة
+                // ✅ إصلاح ٤: حالة فشل صريحة ثم تجرب التالي تلقائياً
                 _connState = ConnectionState.failed;
-                _statusMessage = 'Connection failed';
-                // بعد 3 ثواني يرجع لـ disconnected
-                Timer(const Duration(seconds: 3), () {
+                _statusMessage = 'Trying next server...';
+                notifyListeners();
+                Timer(const Duration(seconds: 2), () {
                   if (_connState == ConnectionState.failed) {
-                    _connState = ConnectionState.disconnected;
-                    _statusMessage = '';
-                    notifyListeners();
+                    connectFastest();
                   }
                 });
               } else {
@@ -273,13 +296,11 @@ class VpnProvider extends ChangeNotifier {
         if (isConnecting) {
           _vpn?.disconnect();
           _connState = ConnectionState.failed;
-          _statusMessage = 'Connection timed out';
+          _statusMessage = 'Trying next server...';
           notifyListeners();
-          Timer(const Duration(seconds: 3), () {
-            if (isFailed) {
-              _connState = ConnectionState.disconnected;
-              _statusMessage = '';
-              notifyListeners();
+          Timer(const Duration(seconds: 2), () {
+            if (_connState == ConnectionState.failed) {
+              connectFastest();
             }
           });
         }
@@ -303,12 +324,31 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Connect Fastest ──────────────────────────────────────
+  // يجرب السيرفرات بالترتيب حتى يتصل بواحد
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
     final available = _servers.where((s) => s.ovpnConfig.isNotEmpty).toList();
     if (available.isEmpty) return;
-    await connectTo(available.first);
+
+    // جرب الأول — وإذا فشل خلال الـ timeout راح يظهر failed
+    // المستخدم يقدر يضغط مرة ثانية يجرب التالي
+    // نختار أفضل سيرفر لم يجرّب بعد
+    final untried = available
+        .where((s) => !_triedServers.contains(s.ip))
+        .toList();
+
+    if (untried.isEmpty) {
+      // جرّب كلهم — ريست وابدأ من الأول
+      _triedServers.clear();
+      await connectTo(available.first);
+    } else {
+      _triedServers.add(untried.first.ip);
+      await connectTo(untried.first);
+    }
   }
+
+  // سيرفرات جرّبناها في هذه الجلسة
+  final Set<String> _triedServers = {};
 
   // ─── Disconnect ───────────────────────────────────────────
   Future<void> disconnect() async {
@@ -317,12 +357,14 @@ class VpnProvider extends ChangeNotifier {
     _disconnectDebounce?.cancel();
     _connectionTimeout?.cancel();
     _lastStage = null;
+    _triedServers.clear();
 
     _vpn?.disconnect();
     _connState = ConnectionState.disconnected;
     _selected = null;
     _statusMessage = '';
     _stopStats();
+    _hideNotification(); // ✅ أخفِ الإشعار
     notifyListeners();
   }
 

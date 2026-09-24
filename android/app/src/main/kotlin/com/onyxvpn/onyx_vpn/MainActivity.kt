@@ -16,7 +16,7 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val VPN_PERMISSION_CODE = 1001
-        private const val CHANNEL = "com.onyxvpn/notification"
+        private const val CHANNEL = "com.onyxvpn.notification"
     }
 
     private var methodChannel: MethodChannel? = null
@@ -35,12 +35,13 @@ class MainActivity : FlutterActivity() {
         ).apply {
             setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "showNotification" -> {
-                        val serverName = call.argument<String>("serverName") ?: "Unknown"
-                        VpnNotificationService.show(this@MainActivity, serverName)
+                    "show" -> {
+                        val serverName = call.argument<String>("server_name") ?: "VPN"
+                        val ping = call.argument<Int>("ping") ?: -1
+                        VpnNotificationService.show(this@MainActivity, serverName, ping)
                         result.success(null)
                     }
-                    "hideNotification" -> {
+                    "hide" -> {
                         VpnNotificationService.hide(this@MainActivity)
                         result.success(null)
                     }
