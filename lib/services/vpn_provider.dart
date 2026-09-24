@@ -187,15 +187,20 @@ class VpnProvider extends ChangeNotifier {
 
   // ─── Connect To ───────────────────────────────────────────
   Future<void> connectTo(VpnServer server) async {
-    // إذا متصل أو يتصل — افصل أولاً بشكل نظيف
+    // إذا نفس السيرفر وأصلاً متصل — ما نسوي شي
+    if (_selected?.ip == server.ip && isConnected) return;
+
+    // إلغاء أي timeout سابق
+    _connectionTimeout?.cancel();
+
+    // إذا في اتصال حالي — افصل أولاً وانتظر
     if (isConnected || isConnecting) {
       _isSwitchingServer = true;
       _vpn?.disconnect();
-      _stage = VPNStage.disconnected;
       _stopStats();
-      _connectionTimeout?.cancel();
       notifyListeners();
-      await Future.delayed(const Duration(milliseconds: 500));
+      // انتظر حتى يتأكد الفصل
+      await Future.delayed(const Duration(milliseconds: 800));
       _isSwitchingServer = false;
     }
 
@@ -207,8 +212,7 @@ class VpnProvider extends ChangeNotifier {
     _statusMessage = 'Connecting...';
     notifyListeners();
 
-    // timeout — إذا ما اتصل بـ 25 ثانية يوقف بدون ما يجرب سيرفر ثاني
-    _connectionTimeout?.cancel();
+    // timeout — يوقف بعد 25 ثانية بدون ما يجرب سيرفر ثاني
     _connectionTimeout = Timer(
       const Duration(seconds: _timeoutSeconds),
       () {
