@@ -96,7 +96,7 @@ class ServersScreen extends StatelessWidget {
                                             fontSize: 14,
                                             fontWeight: FontWeight.w500)),
                                     Text(
-                                        '${s.ping} ms · ${s.pingLabel}',
+                                        '${s.effectivePing > 0 && s.effectivePing < 9999 ? s.effectivePing : s.ping} ms · ${s.pingLabel}',
                                         style: const TextStyle(
                                             color: Color(0xFF6B7280),
                                             fontSize: 11)),

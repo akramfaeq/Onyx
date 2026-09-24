@@ -138,21 +138,26 @@ class _PowerOrbState extends State<_PowerOrb>
     final vpn = widget.vpn;
     final connected = vpn.isConnected;
     final connecting = vpn.isConnecting;
+    final failed = vpn.isFailed;
     final loading = vpn.loadingServers;
 
-    final color = connecting
-        ? const Color(0xFFF59E0B)
-        : connected
-            ? const Color(0xFF10B981)
-            : const Color(0xFF7B5CF0);
+    final color = failed
+        ? const Color(0xFFEF4444)
+        : connecting
+            ? const Color(0xFFF59E0B)
+            : connected
+                ? const Color(0xFF10B981)
+                : const Color(0xFF7B5CF0);
 
     String label;
     if (loading) {
       label = 'Loading...';
+    } else if (failed) {
+      label = vpn.statusMessage;
     } else if (connected) {
       label = 'Tap to\ndisconnect';
     } else if (connecting) {
-      label = 'Connecting...';
+      label = vpn.statusMessage;
     } else {
       label = 'Quick\nConnect';
     }
@@ -160,12 +165,14 @@ class _PowerOrbState extends State<_PowerOrb>
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
-        final scale = (connected || connecting) ? _pulse.value : 1.0;
+        // ✅ إصلاح ١: الـ animation لا يتوقف بين connecting و authenticating
+        final active = connected || connecting;
+        final scale = active ? _pulse.value : 1.0;
         return Transform.scale(
           scale: scale,
           child: GestureDetector(
             onTap: () {
-              if (loading) return;
+              if (loading || failed) return;
               if (connected || connecting) {
                 vpn.disconnect();
               } else {
@@ -546,7 +553,7 @@ class _ServerTile extends StatelessWidget {
                           color: Colors.white,
                           fontSize: 14,
                           fontWeight: FontWeight.w500)),
-                  Text('${server.ping} ms · ${server.pingLabel}',
+                  Text('${server.effectivePing > 0 && server.effectivePing < 9999 ? server.effectivePing : server.ping} ms · ${server.pingLabel}',
                       style: const TextStyle(
                           color: Color(0xFF6B7280), fontSize: 11)),
                 ],
