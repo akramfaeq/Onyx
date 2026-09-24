@@ -3,7 +3,7 @@ update_servers.py
 يجيب سيرفرات VPN من VPNGate، يفلترهم، يحفظهم في Supabase.
 """
 
-import os
+import os 
 import csv
 import base64
 import time
