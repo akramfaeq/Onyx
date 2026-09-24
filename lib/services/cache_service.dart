@@ -5,7 +5,7 @@ class CacheService {
   static const _boxName = 'vpn_cache';
   static const _serversKey = 'servers';
   static const _timestampKey = 'servers_timestamp';
-  static const _cacheDuration = Duration(hours: 1);
+  static const _cacheDuration = Duration(hours: 6);
 
   static Box? _box;
 

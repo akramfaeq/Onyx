@@ -4,7 +4,6 @@ import '../services/vpn_provider.dart';
 import '../services/ads_service.dart';
 import 'servers_screen.dart';
 import 'info_screen.dart';
-import 'debug_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -33,23 +32,7 @@ class HomeScreen extends StatelessWidget {
 }
 
 // ─── Top Bar ──────────────────────────────────────────────────
-class _TopBar extends StatefulWidget {
-  @override
-  State<_TopBar> createState() => _TopBarState();
-}
-
-class _TopBarState extends State<_TopBar> {
-  int _tapCount = 0;
-
-  void _onLogoTap() {
-    _tapCount++;
-    if (_tapCount >= 5) {
-      _tapCount = 0;
-      Navigator.push(context,
-          MaterialPageRoute(builder: (_) => const DebugScreen()));
-    }
-  }
-
+class _TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -57,28 +40,25 @@ class _TopBarState extends State<_TopBar> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          GestureDetector(
-            onTap: _onLogoTap,
-            child: RichText(
-              text: const TextSpan(children: [
-                TextSpan(
-                  text: 'Onyx',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-                TextSpan(
-                  text: 'VPN',
-                  style: TextStyle(
-                      color: Color(0xFF7B5CF0),
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-              ]),
-            ),
+          RichText(
+            text: const TextSpan(children: [
+              TextSpan(
+                text: 'Onyx',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+              TextSpan(
+                text: 'VPN',
+                style: TextStyle(
+                    color: Color(0xFF7B5CF0),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+            ]),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
@@ -109,7 +89,6 @@ class _MainContent extends StatelessWidget {
         return Column(
           children: [
             const SizedBox(height: 28),
-            // ✅ الدائرة = Quick Connect (سيرفر عشوائي)
             _PowerOrb(vpn: vpn),
             const SizedBox(height: 16),
             _StatusChip(vpn: vpn),
@@ -158,7 +137,7 @@ class _PowerOrbState extends State<_PowerOrb>
   Widget build(BuildContext context) {
     final vpn = widget.vpn;
     final connected = vpn.isConnected;
-    final connecting = vpn.isConnecting || vpn.isReconnecting;
+    final connecting = vpn.isConnecting;
     final loading = vpn.loadingServers;
 
     final color = connecting
@@ -185,7 +164,6 @@ class _PowerOrbState extends State<_PowerOrb>
         return Transform.scale(
           scale: scale,
           child: GestureDetector(
-            // ✅ إصلاح ١: الاتصال فقط عند الضغط
             onTap: () {
               if (loading) return;
               if (connected || connecting) {
@@ -278,7 +256,7 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = vpn.isConnected;
-    final connecting = vpn.isConnecting || vpn.isReconnecting;
+    final connecting = vpn.isConnecting;
 
     final color = connecting
         ? const Color(0xFFF59E0B)
@@ -417,11 +395,9 @@ class _ServersPanelState extends State<_ServersPanel> {
   @override
   void initState() {
     super.initState();
-    // ✅ إصلاح ١: فقط نجيب السيرفرات بدون اتصال تلقائي
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final vpn = widget.vpn;
-      if (vpn.vpngateServers.isEmpty && vpn.supabaseServers.isEmpty) {
-        vpn.fetchServers();
+      if (widget.vpn.servers.isEmpty) {
+        widget.vpn.fetchServers();
       }
     });
   }
@@ -438,7 +414,7 @@ class _ServersPanelState extends State<_ServersPanel> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Available Servers',
+                const Text('Servers',
                     style: TextStyle(
                         color: Color(0xFF9CA3AF),
                         fontSize: 12,
@@ -461,57 +437,32 @@ class _ServersPanelState extends State<_ServersPanel> {
                 ? const Center(
                     child: CircularProgressIndicator(
                         color: Color(0xFF7B5CF0)))
-                : (vpn.vpngateServers.isEmpty && vpn.supabaseServers.isEmpty)
+                : vpn.servers.isEmpty
                     ? _emptyView(vpn)
                     : RefreshIndicator(
                         color: const Color(0xFF7B5CF0),
                         backgroundColor: const Color(0xFF12121E),
-                        onRefresh: () =>
-                            vpn.fetchServers(forceRefresh: true),
-                        child: ListView(
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 24),
-                          children: [
-                            // ── قسم Recommended (Supabase) ──
-                            if (vpn.supabaseServers.isNotEmpty) ...[
-                              _SectionHeader(
-                                  title: 'Recommended',
-                                  subtitle: 'Updated daily · Tested'),
+                        onRefresh: () => vpn.fetchServers(forceRefresh: true),
+                        child: ListView.separated(
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          itemCount: vpn.servers.take(8).length,
+                          separatorBuilder: (_, __) =>
                               const SizedBox(height: 8),
-                              ...vpn.supabaseServers
-                                  .take(5)
-                                  .map((s) => _buildTile(s, vpn)),
-                              const SizedBox(height: 16),
-                            ],
-                            // ── قسم VPN Gate ──
-                            if (vpn.vpngateServers.isNotEmpty) ...[
-                              _SectionHeader(
-                                  title: 'VPN Gate',
-                                  subtitle: 'Live servers'),
-                              const SizedBox(height: 8),
-                              ...vpn.vpngateServers
-                                  .take(8)
-                                  .map((s) => _buildTile(s, vpn)),
-                            ],
-                          ],
+                          itemBuilder: (_, i) {
+                            final s = vpn.servers[i];
+                            final selected = vpn.selectedServer?.ip == s.ip;
+                            return _ServerTile(
+                              server: s,
+                              selected: selected,
+                              connecting: vpn.isConnecting && selected,
+                              connected: vpn.isConnected && selected,
+                              onTap: () => vpn.connectTo(s),
+                            );
+                          },
                         ),
                       ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildTile(VpnServer s, VpnProvider vpn) {
-    final selected = vpn.selectedServer?.ip == s.ip;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: _ServerTile(
-        server: s,
-        selected: selected,
-        connecting: vpn.isConnecting && selected,
-        connected: vpn.isConnected && selected,
-        onTap: () => vpn.connectTo(s),
       ),
     );
   }
@@ -540,43 +491,6 @@ class _ServersPanelState extends State<_ServersPanel> {
           ],
         ),
       ]),
-    );
-  }
-}
-
-// ─── Section Header ──────────────────────────────────────────
-class _SectionHeader extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  const _SectionHeader({required this.title, required this.subtitle});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-          width: 3,
-          height: 16,
-          decoration: BoxDecoration(
-            color: const Color(0xFF7B5CF0),
-            borderRadius: BorderRadius.circular(2),
-          ),
-        ),
-        const SizedBox(width: 8),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600)),
-            Text(subtitle,
-                style: const TextStyle(
-                    color: Color(0xFF6B7280), fontSize: 10)),
-          ],
-        ),
-      ],
     );
   }
 }

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:csv/csv.dart';
 import 'package:openvpn_flutter/openvpn_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
@@ -20,9 +19,6 @@ String formatSpeed(String raw) {
   return '${num.toStringAsFixed(0)} B/s';
 }
 
-// ─── Server Source ────────────────────────────────────────────
-enum ServerSource { vpngate, supabase }
-
 // ─── VpnServer ────────────────────────────────────────────────
 class VpnServer {
   final String countryName;
@@ -31,7 +27,6 @@ class VpnServer {
   final int ping;
   final String ovpnConfig;
   final int numSessions;
-  final ServerSource source;
 
   const VpnServer({
     required this.countryName,
@@ -40,7 +35,6 @@ class VpnServer {
     required this.ping,
     required this.ovpnConfig,
     this.numSessions = 0,
-    this.source = ServerSource.vpngate,
   });
 
   int get score {
@@ -76,37 +70,22 @@ class VpnServer {
     'ping': ping,
     'ovpn_config': ovpnConfig,
     'num_sessions': numSessions,
-    'source': source.name,
   };
 
-  factory VpnServer.fromMap(Map<String, dynamic> m,
-      {ServerSource src = ServerSource.vpngate}) =>
-      VpnServer(
-        countryName: cleanCountryName(m['country_name'] ?? ''),
-        countryCode: m['country_code'] ?? '',
-        ip: m['ip'] ?? '',
-        ping: (m['ping'] as num?)?.toInt() ?? 999,
-        ovpnConfig: m['ovpn_config'] ?? '',
-        numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
-        source: m['source'] == 'supabase'
-            ? ServerSource.supabase
-            : (src == ServerSource.supabase
-                ? ServerSource.supabase
-                : ServerSource.vpngate),
-      );
+  factory VpnServer.fromMap(Map<String, dynamic> m) => VpnServer(
+    countryName: cleanCountryName(m['country_name'] ?? ''),
+    countryCode: m['country_code'] ?? '',
+    ip: m['ip'] ?? '',
+    ping: (m['ping'] as num?)?.toInt() ?? 999,
+    ovpnConfig: m['ovpn_config'] ?? '',
+    numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
+  );
 }
 
 // ─── VpnProvider ──────────────────────────────────────────────
 class VpnProvider extends ChangeNotifier {
-  // ✅ قائمتان منفصلتان
-  final List<VpnServer> _vpngateServers = [];
-  final List<VpnServer> _supabaseServers = [];
-
-  List<VpnServer> get vpngateServers => _vpngateServers;
-  List<VpnServer> get supabaseServers => _supabaseServers;
-
-  // للتوافق مع الكود القديم
-  List<VpnServer> get servers => [..._supabaseServers, ..._vpngateServers];
+  final List<VpnServer> _servers = [];
+  List<VpnServer> get servers => _servers;
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -138,28 +117,20 @@ class VpnProvider extends ChangeNotifier {
   DateTime? _connectedAt;
   Timer? _statsTimer;
   Timer? _connectionTimeout;
-  Timer? _reconnectTimer;
 
   OpenVPN? _vpn;
-
-  VpnServer? _lastSuccessfulServer;
-  final List<String> _triedIps = [];
   final List<String> _trustedIps = [];
 
   bool _userDisconnected = false;
   bool _isSwitchingServer = false;
-  bool _isReconnecting = false;
-  bool get isReconnecting => _isReconnecting;
 
-  static const int _timeoutSeconds = 20;
-  static const int _pageSize = 20;
+  static const int _timeoutSeconds = 25;
 
-  // ✅ إصلاح ١: ما نتصل تلقائياً — بس نهيئ OpenVPN
   VpnProvider() {
     _initOpenVpn();
   }
 
-  // ─── Init OpenVPN ──────────────────────────────────────────
+  // ─── Init OpenVPN ─────────────────────────────────────────
   void _initOpenVpn() {
     _vpn = OpenVPN(
       onVpnStageChanged: (stage, _) {
@@ -167,17 +138,11 @@ class VpnProvider extends ChangeNotifier {
 
         if (stage == VPNStage.connected) {
           _connectionTimeout?.cancel();
-          _reconnectTimer?.cancel();
-          _isReconnecting = false;
-          _triedIps.clear();
-          _lastSuccessfulServer = _selected;
           _statusMessage = '';
-
           if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
             _trustedIps.insert(0, _selected!.ip);
             if (_trustedIps.length > 10) _trustedIps.removeLast();
           }
-
           _connectedAt = DateTime.now();
           _startStats();
           AdsService.showInterstitialAfterSuccess(1);
@@ -185,15 +150,10 @@ class VpnProvider extends ChangeNotifier {
         } else if (stage == VPNStage.disconnected) {
           _connectionTimeout?.cancel();
           _stopStats();
-
-          if (_userDisconnected) {
-            _isReconnecting = false;
+          // لا نعيد الاتصال تلقائياً — المستخدم هو من يختار
+          if (!_isSwitchingServer) {
             _statusMessage = '';
-          } else if (!_isSwitchingServer) {
-            // ✅ إصلاح ٤: يكمل يجرب حتى يتصل
-            _isReconnecting = true;
-            _statusMessage = 'Connecting...';
-            _scheduleReconnect();
+            _isReconnecting = false;
           }
 
         } else if (stage == VPNStage.connecting) {
@@ -222,21 +182,24 @@ class VpnProvider extends ChangeNotifier {
     );
   }
 
-  // ─── Connect To (OpenVPN فقط) ──────────────────────────────
-  Future<void> connectTo(VpnServer server,
-      {bool isAutoReconnect = false}) async {
+  bool _isReconnecting = false;
+  bool get isReconnecting => _isReconnecting;
+
+  // ─── Connect To ───────────────────────────────────────────
+  Future<void> connectTo(VpnServer server) async {
+    // إذا متصل أو يتصل — افصل أولاً بشكل نظيف
     if (isConnected || isConnecting) {
-      _userDisconnected = false;
       _isSwitchingServer = true;
-      _isReconnecting = false;
       _vpn?.disconnect();
       _stage = VPNStage.disconnected;
       _stopStats();
       _connectionTimeout?.cancel();
       notifyListeners();
-      await Future.delayed(const Duration(milliseconds: 300));
+      await Future.delayed(const Duration(milliseconds: 500));
       _isSwitchingServer = false;
     }
+
+    if (server.ovpnConfig.isEmpty) return;
 
     _userDisconnected = false;
     _selected = server;
@@ -244,27 +207,16 @@ class VpnProvider extends ChangeNotifier {
     _statusMessage = 'Connecting...';
     notifyListeners();
 
-    if (server.ovpnConfig.isEmpty) {
-      _tryNextServer();
-      return;
-    }
-
-    if (!_triedIps.contains(server.ip)) {
-      _triedIps.add(server.ip);
-    }
-
+    // timeout — إذا ما اتصل بـ 25 ثانية يوقف بدون ما يجرب سيرفر ثاني
     _connectionTimeout?.cancel();
     _connectionTimeout = Timer(
       const Duration(seconds: _timeoutSeconds),
       () {
         if (isConnecting) {
-          _isSwitchingServer = true;
           _vpn?.disconnect();
-          _isSwitchingServer = false;
-          _stage = VPNStage.prepare;
-          _statusMessage = 'Connecting...';
+          _stage = VPNStage.disconnected;
+          _statusMessage = 'Connection timed out';
           notifyListeners();
-          _tryNextServer();
         }
       },
     );
@@ -280,42 +232,28 @@ class VpnProvider extends ChangeNotifier {
     } catch (_) {
       _stage = VPNStage.disconnected;
       _connectionTimeout?.cancel();
-      _statusMessage = '';
+      _statusMessage = 'Connection failed';
       notifyListeners();
-      _tryNextServer();
     }
   }
 
-  // ✅ إصلاح ٥: الدائرة = سيرفر عشوائي من أفضل السيرفرات
+  // ─── Connect Fastest ──────────────────────────────────────
   Future<void> connectFastest() async {
-    final all = [..._supabaseServers, ..._vpngateServers]
-        .where((s) => s.ovpnConfig.isNotEmpty)
-        .toList();
-
-    if (all.isEmpty) {
+    if (_servers.isEmpty) {
       await fetchServers();
-      final retried = [..._supabaseServers, ..._vpngateServers]
-          .where((s) => s.ovpnConfig.isNotEmpty)
-          .toList();
-      if (retried.isNotEmpty) {
-        await connectTo(retried.first);
-      }
-      return;
     }
-
-    // اختار أفضل سيرفر (أقل ping)
-    all.sort((a, b) => a.score.compareTo(b.score));
-    await connectTo(all.first);
+    final available = _servers.where((s) => s.ovpnConfig.isNotEmpty).toList();
+    if (available.isEmpty) return;
+    available.sort((a, b) => a.score.compareTo(b.score));
+    await connectTo(available.first);
   }
 
-  // ─── Disconnect ────────────────────────────────────────────
+  // ─── Disconnect ───────────────────────────────────────────
   Future<void> disconnect() async {
     _userDisconnected = true;
     _isSwitchingServer = false;
     _isReconnecting = false;
-    _reconnectTimer?.cancel();
     _connectionTimeout?.cancel();
-    _triedIps.clear();
 
     _vpn?.disconnect();
     _stage = VPNStage.disconnected;
@@ -325,60 +263,7 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Try Next Server ───────────────────────────────────────
-  Future<void> _tryNextServer() async {
-    final all = [..._supabaseServers, ..._vpngateServers]
-        .where((s) => s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
-        .take(1)
-        .toList();
-
-    if (all.isNotEmpty) {
-      await connectTo(all.first);
-    } else {
-      _triedIps.clear();
-      _stage = VPNStage.disconnected;
-      _statusMessage = '';
-      _isReconnecting = false;
-      notifyListeners();
-    }
-  }
-
-  // ─── Reconnect ─────────────────────────────────────────────
-  void _scheduleReconnect() {
-    _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(const Duration(seconds: 2), () async {
-      if (isConnected || isConnecting || _userDisconnected) {
-        _isReconnecting = false;
-        notifyListeners();
-        return;
-      }
-
-      final all = [..._supabaseServers, ..._vpngateServers]
-          .where((s) => s.ovpnConfig.isNotEmpty && !_triedIps.contains(s.ip))
-          .take(1)
-          .toList();
-
-      if (all.isNotEmpty) {
-        _selected = all.first;
-        _stage = VPNStage.prepare;
-        _statusMessage = 'Connecting...';
-        notifyListeners();
-        await connectTo(all.first, isAutoReconnect: true);
-      } else {
-        _triedIps.clear();
-        final restart = _lastSuccessfulServer ?? _selected;
-        if (restart != null) {
-          await connectTo(restart, isAutoReconnect: true);
-        } else {
-          _isReconnecting = false;
-          _statusMessage = '';
-          notifyListeners();
-        }
-      }
-    });
-  }
-
-  // ─── Stats ─────────────────────────────────────────────────
+  // ─── Stats ────────────────────────────────────────────────
   void _startStats() {
     _statsTimer?.cancel();
     _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -404,7 +289,7 @@ class VpnProvider extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  // ─── Fetch Servers ─────────────────────────────────────────
+  // ─── Fetch Servers (Supabase فقط) ─────────────────────────
   Future<void> fetchServers({bool forceRefresh = false}) async {
     _serversError = null;
 
@@ -420,27 +305,14 @@ class VpnProvider extends ChangeNotifier {
     }
 
     _loadingServers = true;
-    _vpngateServers.clear();
-    _supabaseServers.clear();
+    _servers.clear();
     notifyListeners();
 
-    final results = await Future.wait([
-      _fetchVpnGate(),
-      _fetchSupabase().catchError((_) => <VpnServer>[]),
-    ]);
+    final list = await _fetchSupabase();
 
-    final vpngateList = results[0];
-    final supabaseList = results[1];
-
-    if (vpngateList.isNotEmpty || supabaseList.isNotEmpty) {
-      _applyVpngate(vpngateList);
-      _applySupabase(supabaseList);
-
-      final allForCache = [
-        ..._supabaseServers.map((s) => {...s.toMap(), 'source': 'supabase'}),
-        ..._vpngateServers.map((s) => {...s.toMap(), 'source': 'vpngate'}),
-      ];
-      await CacheService.saveServers(allForCache);
+    if (list.isNotEmpty) {
+      _applyServers(list);
+      await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
     } else {
       _serversError = 'Could not fetch servers. Pull down to retry.';
     }
@@ -451,75 +323,38 @@ class VpnProvider extends ChangeNotifier {
 
   Future<void> _backgroundRefresh() async {
     try {
-      final results = await Future.wait([
-        _fetchVpnGate(),
-        _fetchSupabase().catchError((_) => <VpnServer>[]),
-      ]);
-      _applyVpngate(results[0]);
-      _applySupabase(results[1]);
-      final allForCache = [
-        ..._supabaseServers.map((s) => {...s.toMap(), 'source': 'supabase'}),
-        ..._vpngateServers.map((s) => {...s.toMap(), 'source': 'vpngate'}),
-      ];
-      await CacheService.saveServers(allForCache);
-      notifyListeners();
+      final list = await _fetchSupabase();
+      if (list.isNotEmpty) {
+        _applyServers(list);
+        await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
+        notifyListeners();
+      }
     } catch (_) {}
   }
 
   void _applyCached(List<Map<String, dynamic>> cached) {
-    _vpngateServers.clear();
-    _supabaseServers.clear();
+    _servers.clear();
     for (final m in cached) {
-      final src = m['source'] == 'supabase'
-          ? ServerSource.supabase
-          : ServerSource.vpngate;
-      final s = VpnServer.fromMap(m, src: src);
+      final s = VpnServer.fromMap(m);
       if (s.ovpnConfig.isEmpty || s.ping > 300) continue;
-      if (src == ServerSource.supabase) {
-        _supabaseServers.add(s);
-      } else {
-        _vpngateServers.add(s);
-      }
+      _servers.add(s);
     }
-    _sortAndLimit(_vpngateServers);
-    _sortAndLimit(_supabaseServers);
+    _sortServers();
   }
 
-  void _applyVpngate(List<VpnServer> list) {
-    _vpngateServers.clear();
-    final filtered = list
-        .where((s) => s.ping <= 300 && s.ovpnConfig.isNotEmpty)
-        .toList();
-    _sortAndLimit(filtered);
-    final seenIps = <String>{};
-    final countryCount = <String, int>{};
-    for (final s in filtered) {
-      if (seenIps.contains(s.ip)) continue;
-      seenIps.add(s.ip);
-      final count = countryCount[s.countryCode] ?? 0;
-      if (count < 3) {
-        _vpngateServers.add(s);
-        countryCount[s.countryCode] = count + 1;
-      }
+  void _applyServers(List<VpnServer> list) {
+    _servers.clear();
+    final seen = <String>{};
+    for (final s in list) {
+      if (seen.contains(s.ip)) continue;
+      seen.add(s.ip);
+      _servers.add(s);
     }
+    _sortServers();
   }
 
-  void _applySupabase(List<VpnServer> list) {
-    _supabaseServers.clear();
-    final filtered = list
-        .where((s) => s.ping <= 300 && s.ovpnConfig.isNotEmpty)
-        .toList();
-    _sortAndLimit(filtered);
-    final seenIps = <String>{};
-    for (final s in filtered) {
-      if (seenIps.contains(s.ip)) continue;
-      seenIps.add(s.ip);
-      _supabaseServers.add(s);
-    }
-  }
-
-  void _sortAndLimit(List<VpnServer> list) {
-    list.sort((a, b) {
+  void _sortServers() {
+    _servers.sort((a, b) {
       final aTrusted = _trustedIps.contains(a.ip);
       final bTrusted = _trustedIps.contains(b.ip);
       if (aTrusted && !bTrusted) return -1;
@@ -528,57 +363,9 @@ class VpnProvider extends ChangeNotifier {
     });
   }
 
-  // ─── Fetch VPNGate ─────────────────────────────────────────
-  Future<List<VpnServer>> _fetchVpnGate() async {
-    final urls = [
-      'https://www.vpngate.net/api/iphone/',
-      'https://vpngate.net/api/iphone/',
-    ];
-
-    for (final url in urls) {
-      try {
-        final res = await http
-            .get(Uri.parse(url), headers: {'User-Agent': 'Mozilla/5.0'})
-            .timeout(const Duration(seconds: 12));
-
-        if (res.statusCode != 200) continue;
-
-        final lines = res.body.split('\n');
-        final csv = lines.skip(1).join('\n');
-        final rows = const CsvToListConverter().convert(csv);
-        final result = <VpnServer>[];
-
-        for (final r in rows.skip(1)) {
-          if (r.length <= 14 || r[14].toString().isEmpty) continue;
-          try {
-            final ping = int.tryParse(r[3].toString()) ?? 999;
-            if (ping > 300) continue;
-            final config = utf8.decode(base64.decode(r[14].toString()));
-            final name = cleanCountryName(r[5].toString());
-            if (name.isEmpty) continue;
-            final sessions = int.tryParse(r[7].toString()) ?? 0;
-            result.add(VpnServer(
-              countryName: name,
-              countryCode: r[6].toString().toUpperCase(),
-              ip: r[1].toString(),
-              ping: ping,
-              ovpnConfig: config,
-              numSessions: sessions,
-              source: ServerSource.vpngate,
-            ));
-            if (result.length >= 80) break;
-          } catch (_) {}
-        }
-        if (result.isNotEmpty) return result;
-      } catch (_) {}
-    }
-    return [];
-  }
-
-  // ─── Fetch Supabase ────────────────────────────────────────
-  // ✅ إصلاح ٣: نجيب من Supabase بشكل صحيح
+  // ─── Fetch Supabase ───────────────────────────────────────
   Future<List<VpnServer>> _fetchSupabase() async {
-    // ── طريقة ١: Supabase SDK ──
+    // طريقة ١: SDK
     try {
       final res = await Supabase.instance.client
           .from('servers')
@@ -588,41 +375,28 @@ class VpnProvider extends ChangeNotifier {
           .order('ping', ascending: true)
           .limit(80);
 
-      final servers = (res as List)
-          .map((r) => VpnServer.fromMap(
-                Map<String, dynamic>.from(r),
-                src: ServerSource.supabase,
-              ))
+      final list = (res as List)
+          .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
           .where((s) => s.ovpnConfig.isNotEmpty)
           .toList();
 
-      if (servers.isNotEmpty) return servers;
+      if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // ── طريقة ٢: HTTP مباشر كـ fallback ──
+    // طريقة ٢: HTTP مباشر
     try {
-      const supabaseUrl = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
-      const supabaseKey =
-          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
+      const url = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
+      const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
 
-      final uri = Uri.parse(
-        '$supabaseUrl/rest/v1/servers'
-        '?is_active=eq.true&ping=lte.300&order=ping.asc&limit=80',
-      );
-
+      final uri = Uri.parse('$url/rest/v1/servers?is_active=eq.true&ping=lte.300&order=ping.asc&limit=80');
       final res = await http.get(uri, headers: {
-        'apikey': supabaseKey,
-        'Authorization': 'Bearer $supabaseKey',
-        'Content-Type': 'application/json',
+        'apikey': key,
+        'Authorization': 'Bearer $key',
       }).timeout(const Duration(seconds: 12));
 
       if (res.statusCode == 200) {
-        final list = jsonDecode(res.body) as List;
-        return list
-            .map((r) => VpnServer.fromMap(
-                  Map<String, dynamic>.from(r),
-                  src: ServerSource.supabase,
-                ))
+        return (jsonDecode(res.body) as List)
+            .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
             .where((s) => s.ovpnConfig.isNotEmpty)
             .toList();
       }
@@ -635,7 +409,6 @@ class VpnProvider extends ChangeNotifier {
   void dispose() {
     _statsTimer?.cancel();
     _connectionTimeout?.cancel();
-    _reconnectTimer?.cancel();
     super.dispose();
   }
 }
