@@ -2,11 +2,30 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:openvpn_flutter/openvpn_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
+
+// ─── Notification Channel ─────────────────────────────────────
+const _notifChannel = MethodChannel('com.onyxvpn.notification');
+
+Future<void> _showNotification(String serverName, int ping) async {
+  try {
+    await _notifChannel.invokeMethod('show', {
+      'server_name': serverName,
+      'ping': ping,
+    });
+  } catch (_) {}
+}
+
+Future<void> _hideNotification() async {
+  try {
+    await _notifChannel.invokeMethod('hide');
+  } catch (_) {}
+}
 
 // ─── helpers ──────────────────────────────────────────────────
 String cleanCountryName(String raw) =>
@@ -169,7 +188,7 @@ class VpnProvider extends ChangeNotifier {
           _connectionTimeout?.cancel();
           _connState = ConnectionState.connected;
           _statusMessage = '';
-          _triedServers.clear();
+          _triedServers.clear(); // ريست عند النجاح
 
           if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
             _trustedIps.insert(0, _selected!.ip);
@@ -178,6 +197,11 @@ class VpnProvider extends ChangeNotifier {
           _connectedAt = DateTime.now();
           _startStats();
           AdsService.showInterstitialAfterSuccess(1);
+          // ✅ أظهر إشعار مخصص
+          _showNotification(
+            _selected?.countryName ?? 'VPN',
+            _selected?.effectivePing ?? -1,
+          );
           notifyListeners();
 
         } else if (stage == VPNStage.disconnected) {
@@ -215,7 +239,7 @@ class VpnProvider extends ChangeNotifier {
                    stage == VPNStage.authenticating ||
                    stage == VPNStage.vpn_generate_config ||
                    stage == VPNStage.prepare) {
-          // ✅ إصلاح ١ و ٣: كل مراحل الاتصال = loading واحد
+     
           // نغير النص فقط بدون تغيير الحالة
           _disconnectDebounce?.cancel();
           _connState = ConnectionState.loading;
@@ -238,8 +262,6 @@ class VpnProvider extends ChangeNotifier {
       groupIdentifier: 'com.onyxvpn.onyx_vpn',
       providerBundleIdentifier: 'com.onyxvpn.onyx_vpn',
       localizedDescription: 'OnyxVPN',
-      // ✅ نشيل إشعار المكتبة — إشعارنا هو اللي يظهر
-      notificationChannelName: 'OnyxVPN',
     );
   }
 
@@ -342,6 +364,7 @@ class VpnProvider extends ChangeNotifier {
     _selected = null;
     _statusMessage = '';
     _stopStats();
+    _hideNotification(); // ✅ أخفِ الإشعار
     notifyListeners();
   }
 
