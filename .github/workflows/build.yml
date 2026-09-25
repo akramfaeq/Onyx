@@ -26,11 +26,34 @@ jobs:
     - name: Install dependencies
       run: flutter pub get
 
+    - name: Decode Keystore
+      run: |
+        echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/upload-keystore.jks
+
     - name: Build APK
+      env:
+        KEY_ALIAS: upload
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        STORE_FILE: upload-keystore.jks
       run: flutter build apk --release
+
+    - name: Build AAB
+      env:
+        KEY_ALIAS: upload
+        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+        STORE_FILE: upload-keystore.jks
+      run: flutter build appbundle --release
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: release-apk
         path: build/app/outputs/flutter-apk/app-release.apk
+
+    - name: Upload AAB
+      uses: actions/upload-artifact@v4
+      with:
+        name: release-aab
+        path: build/app/outputs/bundle/release/app-release.aab

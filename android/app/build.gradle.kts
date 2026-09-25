@@ -20,15 +20,24 @@ android {
 
     defaultConfig {
         applicationId = "com.onyxvpn.onyx_vpn"
-        minSdk = 21
+        minSdk = flutter.minSdkVersion
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            keyAlias = "upload"
+            keyPassword = "nemo112233"
+            storeFile = file("upload-keystore.jks")
+            storePassword = "nemo112233"
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             isShrinkResources = false
         }
