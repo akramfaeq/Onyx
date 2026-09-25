@@ -32,12 +32,6 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- Service مالتنا — يشتغل كـ Foreground بنفس channel المكتبة -->
-        <service
-            android:name=".VpnNotificationService"
-            android:foregroundServiceType="connectedDevice"
-            android:exported="false" />
-
         <!-- Service مالة المكتبة — لازم يبقى، نعطّل إشعارها الخاص -->
         <service
             android:name="de.blinkt.openvpn.core.OpenVPNService"
@@ -46,9 +40,6 @@
             <intent-filter>
                 <action android:name="android.net.VpnService"/>
             </intent-filter>
-            <meta-data
-                android:name="de.blinkt.openvpn.disable_notification"
-                android:value="true" />
         </service>
 
     </application>

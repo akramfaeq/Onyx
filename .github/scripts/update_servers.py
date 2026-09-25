@@ -132,16 +132,20 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
 def upload_to_supabase(servers: list[dict]):
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # أوقف القديمة أولاً
-    client.table("servers").update({"is_active": False}).neq("ip", "").execute()
-    print("[Supabase] أوقفنا السيرفرات القديمة")
+    # احذف كل السيرفرات القديمة نظيف
+    client.table("servers").delete().neq("ip", "").execute()
+    print("[Supabase] حذفنا السيرفرات القديمة")
 
-    # ارفع الجديدة
+    # تأكد كل سيرفر عنده is_active = True
+    for s in servers:
+        s["is_active"] = True
+
+    # ارفع الجديدة كـ insert نظيف
     batch_size = 20
     uploaded = 0
     for i in range(0, len(servers), batch_size):
         batch = servers[i:i + batch_size]
-        client.table("servers").upsert(batch, on_conflict="ip").execute()
+        client.table("servers").insert(batch).execute()
         uploaded += len(batch)
         print(f"[Supabase] رفعنا {uploaded}/{len(servers)}")
 
