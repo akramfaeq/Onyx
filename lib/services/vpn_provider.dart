@@ -47,13 +47,97 @@ enum ConnectionState {
 }
 
 // ─── Source Priority ──────────────────────────────────────────
-// ترتيب المصادر من الأصعب حجباً للأسهل
 enum ServerSource {
-  source2Hard,      // Hysteria2 + REALITY — الأصعب حجباً
-  source3Cloudflare,// Cloudflare CDN — صعب جداً
-  source4Tested,    // morpheusadam — مختبر فعلياً
-  source1All,       // كل البروتوكولات — احتياطي
-  supabase,         // Supabase — الكاش الرئيسي
+  source2Hard,
+  source3Cloudflare,
+  source4Tested,
+  source1All,
+  supabase,
+}
+
+// ─── Country Info from config URL/fragment ────────────────────
+// خريطة رموز الدول الشائعة
+const _countryNames = {
+  'US': 'United States', 'DE': 'Germany', 'NL': 'Netherlands',
+  'FR': 'France', 'GB': 'United Kingdom', 'CA': 'Canada',
+  'JP': 'Japan', 'SG': 'Singapore', 'AU': 'Australia',
+  'TR': 'Turkey', 'FI': 'Finland', 'SE': 'Sweden',
+  'NO': 'Norway', 'CH': 'Switzerland', 'AT': 'Austria',
+  'PL': 'Poland', 'RU': 'Russia', 'IN': 'India',
+  'KR': 'South Korea', 'HK': 'Hong Kong', 'TW': 'Taiwan',
+  'BR': 'Brazil', 'MX': 'Mexico', 'AR': 'Argentina',
+  'IT': 'Italy', 'ES': 'Spain', 'PT': 'Portugal',
+  'BE': 'Belgium', 'CZ': 'Czech Republic', 'RO': 'Romania',
+  'UA': 'Ukraine', 'IR': 'Iran', 'AE': 'UAE',
+  'SA': 'Saudi Arabia', 'ID': 'Indonesia', 'TH': 'Thailand',
+  'VN': 'Vietnam', 'MY': 'Malaysia', 'PH': 'Philippines',
+  'ZA': 'South Africa', 'EG': 'Egypt', 'NG': 'Nigeria',
+  'IL': 'Israel', 'BG': 'Bulgaria', 'GR': 'Greece',
+  'HU': 'Hungary', 'RS': 'Serbia', 'LT': 'Lithuania',
+  'LV': 'Latvia', 'EE': 'Estonia', 'SK': 'Slovakia',
+  'HR': 'Croatia', 'SI': 'Slovenia', 'DK': 'Denmark',
+  'IE': 'Ireland', 'LU': 'Luxembourg', 'NZ': 'New Zealand',
+  'CL': 'Chile', 'CO': 'Colombia', 'PE': 'Peru',
+  'PK': 'Pakistan', 'BD': 'Bangladesh', 'LK': 'Sri Lanka',
+  'KZ': 'Kazakhstan', 'UZ': 'Uzbekistan', 'GE': 'Georgia',
+  'MD': 'Moldova', 'BY': 'Belarus', 'MK': 'Macedonia',
+  'AL': 'Albania', 'BA': 'Bosnia', 'ME': 'Montenegro',
+  'XK': 'Kosovo', 'CY': 'Cyprus', 'MT': 'Malta',
+  'IS': 'Iceland', 'LI': 'Liechtenstein', 'MC': 'Monaco',
+  'AD': 'Andorra', 'SM': 'San Marino', 'VA': 'Vatican',
+  'JO': 'Jordan', 'LB': 'Lebanon', 'KW': 'Kuwait',
+  'QA': 'Qatar', 'BH': 'Bahrain', 'OM': 'Oman',
+  'IQ': 'Iraq', 'SY': 'Syria', 'YE': 'Yemen',
+  'MM': 'Myanmar', 'KH': 'Cambodia', 'LA': 'Laos',
+  'MN': 'Mongolia', 'NP': 'Nepal', 'AF': 'Afghanistan',
+  'CN': 'China', 'MO': 'Macau',
+};
+
+// استخرج معلومات الدولة من الكونفيغ (fragment أو sni أو IP)
+Map<String, String> _extractCountryInfo(String config) {
+  // 1. حاول تجيب من الـ fragment (#اسم_الدولة)
+  final fragIdx = config.lastIndexOf('#');
+  if (fragIdx != -1) {
+    final raw = Uri.decodeComponent(config.substring(fragIdx + 1)).trim();
+    if (raw.isNotEmpty) {
+      // حاول تطابق رمز دولة مثل "DE" أو "US-New York"
+      final upper = raw.toUpperCase();
+      for (final code in _countryNames.keys) {
+        if (upper.startsWith(code)) {
+          return {'name': _countryNames[code]!, 'code': code};
+        }
+      }
+      // إذا ما طابق رمز، استخدم النص كاسم
+      final cleaned = cleanCountryName(raw);
+      if (cleaned.length > 1 && cleaned.length < 40) {
+        return {'name': cleaned, 'code': 'XX'};
+      }
+    }
+  }
+
+  // 2. حاول تجيب من sni أو host في الـ query params
+  try {
+    final qIdx = config.indexOf('?');
+    if (qIdx != -1 && fragIdx != -1) {
+      final query = config.substring(qIdx + 1, fragIdx > qIdx ? fragIdx : null);
+      final params = Map.fromEntries(
+        query.split('&').where((p) => p.contains('=')).map((p) {
+          final parts = p.split('=');
+          return MapEntry(parts[0], Uri.decodeComponent(parts.skip(1).join('=')));
+        }),
+      );
+      final sni = params['sni'] ?? params['host'] ?? '';
+      if (sni.isNotEmpty) {
+        // حاول تجيب رمز الدولة من نهاية الـ domain (.de, .nl, .fr, .us)
+        final tld = sni.split('.').last.toUpperCase();
+        if (_countryNames.containsKey(tld)) {
+          return {'name': _countryNames[tld]!, 'code': tld};
+        }
+      }
+    }
+  } catch (_) {}
+
+  return {'name': 'Auto', 'code': 'XX'};
 }
 
 // ─── VpnServer ────────────────────────────────────────────────
@@ -62,7 +146,7 @@ class VpnServer {
   final String countryCode;
   final String ip;
   final int ping;
-  final String ovpnConfig; // يحتوي كونفيغ V2Ray أو OpenVPN
+  final String ovpnConfig;
   final int numSessions;
   final String protocol;
   final String source;
@@ -85,14 +169,13 @@ class VpnServer {
   int get effectivePing => realPing > 0 ? realPing : ping;
 
   int get score {
-    // الأصعب حجباً يأخذ أولوية عالية
     final hardBonus = isHardToBlock ? -100 : 0;
     final congestion = (numSessions / 10).clamp(0, 200).toInt();
     return effectivePing + congestion + hardBonus;
   }
 
   String get flag {
-    if (countryCode.length != 2) return '🌐';
+    if (countryCode.length != 2 || countryCode == 'XX') return '🌐';
     return countryCode.toUpperCase().split('').map(
       (c) => String.fromCharCode(c.codeUnitAt(0) + 127397),
     ).join();
@@ -185,7 +268,9 @@ class VpnProvider extends ChangeNotifier {
   Timer? _statsTimer;
   Timer? _connectionTimeout;
 
-  // V2Ray channel — للتواصل مع native Android
+  // ✅ إصلاح ٢: Timer لمراقبة حالة الـ VPN Service
+  Timer? _statusPoller;
+
   static const _v2rayChannel = MethodChannel('com.onyxvpn.v2ray');
 
   bool _userDisconnected = false;
@@ -198,27 +283,22 @@ class VpnProvider extends ChangeNotifier {
   final List<String> _trustedIps = [];
 
   // ─── روابط المصادر ────────────────────────────────────────
-
-  // المصدر 1 — 0xRadikal كل البروتوكولات
   static const _source1Urls = [
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/vless.txt',
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt',
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/trojan.txt',
   ];
 
-  // المصدر 2 — 0xRadikal Hysteria2 + REALITY فقط
   static const _source2Urls = [
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt',
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/reality.txt',
   ];
 
-  // المصدر 3 — Cloudflare CDN
   static const _source3Urls = [
     'https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt',
     'https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub2.txt',
   ];
 
-  // المصدر 4 — morpheusadam مختبر فعلياً
   static const _source4Urls = [
     'https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/mix',
     'https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/hysteria2',
@@ -277,16 +357,20 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
+  // ✅ إصلاح ٣: استخراج اسم الدولة والعلم من الكونفيغ
   VpnServer? _configToServer(String config, String sourceName) {
     final protocol = _detectProtocol(config);
     if (protocol == 'unknown') return null;
     final host = _extractHost(config);
     if (host.isEmpty) return null;
 
+    // استخرج معلومات الدولة
+    final countryInfo = _extractCountryInfo(config);
+
     return VpnServer(
       ip: host,
-      countryName: 'Auto',
-      countryCode: 'XX',
+      countryName: countryInfo['name']!,
+      countryCode: countryInfo['code']!,
       ping: _isHardToBlock(protocol) ? 80 : 180,
       ovpnConfig: config,
       protocol: protocol,
@@ -307,7 +391,7 @@ class VpnProvider extends ChangeNotifier {
     return '';
   }
 
-  // ─── المصدر 1 — كل البروتوكولات ──────────────────────────
+  // ─── المصادر ──────────────────────────────────────────────
   Future<List<VpnServer>> _fetchSource1() async {
     final result = <VpnServer>[];
     for (final url in _source1Urls) {
@@ -321,7 +405,6 @@ class VpnProvider extends ChangeNotifier {
     return result;
   }
 
-  // ─── المصدر 2 — Hysteria2 + REALITY فقط ──────────────────
   Future<List<VpnServer>> _fetchSource2() async {
     final result = <VpnServer>[];
     for (final url in _source2Urls) {
@@ -338,7 +421,6 @@ class VpnProvider extends ChangeNotifier {
     return result;
   }
 
-  // ─── المصدر 3 — Cloudflare CDN ────────────────────────────
   Future<List<VpnServer>> _fetchSource3() async {
     final result = <VpnServer>[];
     for (final url in _source3Urls) {
@@ -350,7 +432,6 @@ class VpnProvider extends ChangeNotifier {
       for (final c in configs) {
         final s = _configToServer(c, 'source_3_cloudflare');
         if (s != null) {
-          // أعطي Cloudflare أولوية أعلى
           result.add(VpnServer(
             ip: s.ip,
             countryName: s.countryName,
@@ -367,7 +448,6 @@ class VpnProvider extends ChangeNotifier {
     return result;
   }
 
-  // ─── المصدر 4 — morpheusadam مختبر ───────────────────────
   Future<List<VpnServer>> _fetchSource4() async {
     final result = <VpnServer>[];
     for (final url in _source4Urls) {
@@ -376,7 +456,6 @@ class VpnProvider extends ChangeNotifier {
       for (final c in _parseConfigs(raw).take(40)) {
         final s = _configToServer(c, 'source_4_tested');
         if (s != null) {
-          // مختبر فعلياً = أولوية أعلى
           result.add(VpnServer(
             ip: s.ip,
             countryName: s.countryName,
@@ -393,11 +472,10 @@ class VpnProvider extends ChangeNotifier {
     return result;
   }
 
-  // ─── Fetch Servers الرئيسي ────────────────────────────────
+  // ─── Fetch Servers ────────────────────────────────────────
   Future<void> fetchServers({bool forceRefresh = false}) async {
     _serversError = null;
 
-    // جرب الكاش أول
     if (!forceRefresh) {
       final cached = CacheService.getCachedServers();
       if (cached != null && cached.isNotEmpty) {
@@ -414,21 +492,20 @@ class VpnProvider extends ChangeNotifier {
     _servers.clear();
     notifyListeners();
 
-    // جيب من المصادر الأربعة + Supabase بالتوازي
     final results = await Future.wait([
-      _fetchSource2(),       // الأولوية الأولى — Hysteria2 + REALITY
-      _fetchSource3(),       // الأولوية الثانية — Cloudflare
-      _fetchSource4(),       // الأولوية الثالثة — مختبر
-      _fetchSource1(),       // الأولوية الرابعة — كل البروتوكولات
-      _fetchSupabase(),      // Supabase — احتياطي
+      _fetchSource2(),
+      _fetchSource3(),
+      _fetchSource4(),
+      _fetchSource1(),
+      _fetchSupabase(),
     ]);
 
     final allServers = <VpnServer>[
-      ...results[0], // source2
-      ...results[1], // source3
-      ...results[2], // source4
-      ...results[3], // source1
-      ...results[4], // supabase
+      ...results[0],
+      ...results[1],
+      ...results[2],
+      ...results[3],
+      ...results[4],
     ];
 
     if (allServers.isNotEmpty) {
@@ -569,7 +646,6 @@ class VpnProvider extends ChangeNotifier {
     );
 
     try {
-      // V2Ray أو OpenVPN؟
       if (server.isV2Ray) {
         await _connectV2Ray(server);
       } else {
@@ -594,6 +670,7 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── V2Ray Connect ────────────────────────────────────────
+  // ✅ إصلاح ١: تحقق فعلي من الاتصال بعد startService
   Future<void> _connectV2Ray(VpnServer server) async {
     try {
       final result = await _v2rayChannel.invokeMethod('connect', {
@@ -602,21 +679,40 @@ class VpnProvider extends ChangeNotifier {
       });
 
       if (result == true) {
-        _connState = ConnectionState.connected;
-        _statusMessage = '';
-        _triedServers.clear();
-        if (!_trustedIps.contains(server.ip)) {
-          _trustedIps.insert(0, server.ip);
-          if (_trustedIps.length > 10) _trustedIps.removeLast();
+        // ✅ انتظر ثانيتين ثم تحقق أن الـ service فعلاً شغّال
+        await Future.delayed(const Duration(seconds: 2));
+
+        bool serviceRunning = false;
+        try {
+          serviceRunning = await _v2rayChannel.invokeMethod('status') == true;
+        } catch (_) {}
+
+        if (serviceRunning) {
+          _connState = ConnectionState.connected;
+          _statusMessage = '';
+          _triedServers.clear();
+          if (!_trustedIps.contains(server.ip)) {
+            _trustedIps.insert(0, server.ip);
+            if (_trustedIps.length > 10) _trustedIps.removeLast();
+          }
+          _connectedAt = DateTime.now();
+          _startStats();
+          _startStatusPoller(); // ✅ ابدأ مراقبة حالة الـ VPN
+          _connectionTimeout?.cancel();
+          AdsService.showInterstitialAfterSuccess(1);
+          _showNotification(server.countryName, server.effectivePing);
+          notifyListeners();
+        } else {
+          // الـ service ما شغّال فعلاً — جرب التالي
+          _connState = ConnectionState.failed;
+          _statusMessage = 'Trying next server...';
+          _connectionTimeout?.cancel();
+          notifyListeners();
+          Timer(const Duration(seconds: 2), () {
+            if (_connState == ConnectionState.failed) connectFastest();
+          });
         }
-        _connectedAt = DateTime.now();
-        _startStats();
-        _connectionTimeout?.cancel();
-        AdsService.showInterstitialAfterSuccess(1);
-        _showNotification(server.countryName, server.effectivePing);
-        notifyListeners();
       } else {
-        // فشل — جرب التالي
         _connState = ConnectionState.failed;
         _statusMessage = 'Trying next server...';
         _connectionTimeout?.cancel();
@@ -636,9 +732,31 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  // ─── OpenVPN Connect (احتياطي) ────────────────────────────
+  // ✅ إصلاح ٢: مراقب يتحقق كل 3 ثواني أن الـ VPN لا زال شغّال
+  void _startStatusPoller() {
+    _statusPoller?.cancel();
+    _statusPoller = Timer.periodic(const Duration(seconds: 3), (_) async {
+      if (!isConnected || _userDisconnected) {
+        _statusPoller?.cancel();
+        return;
+      }
+      try {
+        final running = await _v2rayChannel.invokeMethod('status') == true;
+        if (!running && isConnected && !_userDisconnected) {
+          // الـ VPN انقطع من تلقاء نفسه
+          _connState = ConnectionState.disconnected;
+          _selected = null;
+          _statusMessage = '';
+          _stopStats();
+          _hideNotification();
+          _statusPoller?.cancel();
+          notifyListeners();
+        }
+      } catch (_) {}
+    });
+  }
+
   Future<void> _connectOpenVPN(VpnServer server) async {
-    // نفس منطق OpenVPN القديم — يستخدم فقط للسيرفرات القديمة بـ Supabase
     _connState = ConnectionState.failed;
     _statusMessage = 'OpenVPN not supported for this server';
     notifyListeners();
@@ -648,7 +766,6 @@ class VpnProvider extends ChangeNotifier {
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
 
-    // رتب: الأصعب حجباً أولاً، ثم ما لم يجرب
     final available = _servers
         .where((s) => s.ovpnConfig.isNotEmpty)
         .toList();
@@ -666,6 +783,7 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Disconnect ───────────────────────────────────────────
+  // ✅ إصلاح ٢: disconnect يتأكد أن الـ service توقف فعلاً
   Future<void> disconnect() async {
     _userDisconnected = true;
     _isSwitchingServer = false;
@@ -673,7 +791,21 @@ class VpnProvider extends ChangeNotifier {
     _connectionTimeout?.cancel();
     _lastStage = null;
     _triedServers.clear();
+    _statusPoller?.cancel();
+
+    // أرسل أمر الوقوف
     await _disconnect();
+
+    // انتظر لحين يتأكد أن الـ service وقف
+    bool stopped = false;
+    for (int i = 0; i < 5; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      try {
+        final running = await _v2rayChannel.invokeMethod('status') == true;
+        if (!running) { stopped = true; break; }
+      } catch (_) { stopped = true; break; }
+    }
+
     _connState = ConnectionState.disconnected;
     _selected = null;
     _statusMessage = '';
@@ -752,6 +884,7 @@ class VpnProvider extends ChangeNotifier {
     _statsTimer?.cancel();
     _connectionTimeout?.cancel();
     _disconnectDebounce?.cancel();
+    _statusPoller?.cancel();
     super.dispose();
   }
 }
