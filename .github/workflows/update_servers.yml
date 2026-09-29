@@ -2,8 +2,8 @@ name: Update VPN Servers
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # كل يوم الساعة 3 صباحاً UTC
-  workflow_dispatch:        # تشغيل يدوي من GitHub
+    - cron: '0 */6 * * *'   # كل 6 ساعات (بدل يومياً)
+  workflow_dispatch:
 
 jobs:
   update:
@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests supabase
 
-      - name: Fetch and test servers
+      - name: Fetch and upload servers
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

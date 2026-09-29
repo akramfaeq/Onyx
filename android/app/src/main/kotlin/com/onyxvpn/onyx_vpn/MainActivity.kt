@@ -16,29 +16,34 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val VPN_PERMISSION_CODE = 1001
-        private const val CHANNEL = "com.onyxvpn.notification"
+        private const val NOTIF_CHANNEL   = "com.onyxvpn.notification"
+        private const val V2RAY_CHANNEL   = "com.onyxvpn.v2ray"
     }
 
-    private var methodChannel: MethodChannel? = null
+    private var notifChannel: MethodChannel? = null
+    private var v2rayChannel: MethodChannel? = null
 
+    // يستقبل أمر disconnect من زر الـ notification
     private val disconnectReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            methodChannel?.invokeMethod("disconnect", null)
+            notifChannel?.invokeMethod("disconnect", null)
         }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        methodChannel = MethodChannel(
+
+        // ─── Notification Channel ──────────────────────────────
+        notifChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            CHANNEL
+            NOTIF_CHANNEL
         ).apply {
             setMethodCallHandler { call, result ->
                 when (call.method) {
                     "show" -> {
-                        val serverName = call.argument<String>("server_name") ?: "VPN"
+                        val name = call.argument<String>("server_name") ?: "VPN"
                         val ping = call.argument<Int>("ping") ?: -1
-                        VpnNotificationService.show(this@MainActivity, serverName, ping)
+                        VpnNotificationService.show(this@MainActivity, name, ping)
                         result.success(null)
                     }
                     "hide" -> {
@@ -49,16 +54,83 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+
+        // ─── V2Ray Channel ─────────────────────────────────────
+        v2rayChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            V2RAY_CHANNEL
+        ).apply {
+            setMethodCallHandler { call, result ->
+                when (call.method) {
+
+                    // ── connect ─────────────────────────────────
+                    "connect" -> {
+                        val config = call.argument<String>("config") ?: ""
+                        val name   = call.argument<String>("name")   ?: "VPN"
+
+                        if (config.isEmpty()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+
+                        // طلب إذن VPN لو ما عندنا
+                        val intent = VpnService.prepare(this@MainActivity)
+                        if (intent != null) {
+                            // ما عندنا إذن — طلبه وارجع false
+                            startActivityForResult(intent, VPN_PERMISSION_CODE)
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+
+                        try {
+                            // شغّل V2Ray Service
+                            val serviceIntent = Intent(
+                                this@MainActivity,
+                                V2RayVpnService::class.java
+                            ).apply {
+                                putExtra("config", config)
+                                putExtra("name", name)
+                            }
+                            startService(serviceIntent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    }
+
+                    // ── disconnect ──────────────────────────────
+                    "disconnect" -> {
+                        try {
+                            val stopIntent = Intent(
+                                this@MainActivity,
+                                V2RayVpnService::class.java
+                            ).apply { action = "STOP" }
+                            startService(stopIntent)
+                        } catch (_: Exception) {}
+                        result.success(null)
+                    }
+
+                    // ── status ──────────────────────────────────
+                    "status" -> {
+                        result.success(V2RayVpnService.isRunning)
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // اطلب إذن VPN عند أول فتح للتطبيق
+
+        // طلب إذن VPN عند أول فتح
         val vpnIntent = VpnService.prepare(this)
         if (vpnIntent != null) {
             startActivityForResult(vpnIntent, VPN_PERMISSION_CODE)
         }
-        // سجّل receiver هنا بدل onStart — يبقى شغّال حتى لو التطبيق بالخلفية
+
+        // سجّل receiver للـ disconnect من الـ notification
         val filter = IntentFilter("com.onyxvpn.DISCONNECT")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(disconnectReceiver, filter, RECEIVER_NOT_EXPORTED)
@@ -70,14 +142,13 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // ألغِ التسجيل هنا بدل onStop — لا يموت إلا لما يُقتل التطبيق نهائياً
         try { unregisterReceiver(disconnectReceiver) } catch (_: Exception) {}
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == VPN_PERMISSION_CODE && resultCode == Activity.RESULT_OK) {
-            // إذن VPN تم ✅
+            // إذن VPN تم ✅ — المستخدم يضغط connect مرة ثانية
         }
     }
 }
