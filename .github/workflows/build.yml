@@ -56,12 +56,7 @@ jobs:
     - name: Build APK
       run: flutter build apk --release
 
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-apk
-        path: build/app/outputs/flutter-apk/app-release.apk
-
+    # ── بدون upload-artifact عشان ما تخلص المساحة ──
     - name: Publish APK to Releases
       uses: softprops/action-gh-release@v2
       with:
