@@ -34,6 +34,7 @@ jobs:
         sed -i 's/version "2.1.0" apply false/version "2.2.20" apply false/' android/settings.gradle.kts
         sed -i 's#gradle-8.3-all.zip#gradle-8.14-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
         perl -0pi -e 's/\n\s*kotlinOptions\s*\{[^}]*\}\n/\n/' android/app/build.gradle.kts
+        sed -i 's/compileSdk = 35/compileSdk = 36/' android/app/build.gradle.kts
         echo "android.newDsl=false" >> android/gradle.properties
 
     - name: Install dependencies
@@ -55,20 +56,11 @@ jobs:
     - name: Build APK
       run: flutter build apk --release
 
-    - name: Build AAB
-      run: flutter build appbundle --release
-
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: release-apk
         path: build/app/outputs/flutter-apk/app-release.apk
-
-    - name: Upload AAB
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-aab
-        path: build/app/outputs/bundle/release/app-release.aab
 
     - name: Publish APK to Releases
       uses: softprops/action-gh-release@v2
