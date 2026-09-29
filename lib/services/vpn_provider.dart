@@ -39,7 +39,7 @@ String formatSpeed(String raw) {
 }
 
 // ─── Connection State ─────────────────────────────────────────
-enum ConnectionState {
+enum VpnState {
   disconnected,
   loading,
   connected,
@@ -245,12 +245,12 @@ class VpnProvider extends ChangeNotifier {
   String? _serversError;
   String? get serversError => _serversError;
 
-  ConnectionState _connState = ConnectionState.disconnected;
-  ConnectionState get connState => _connState;
+  VpnState _connState = VpnState.disconnected;
+  VpnState get connState => _connState;
 
-  bool get isConnected => _connState == ConnectionState.connected;
-  bool get isConnecting => _connState == ConnectionState.loading;
-  bool get isFailed => _connState == ConnectionState.failed;
+  bool get isConnected => _connState == VpnState.connected;
+  bool get isConnecting => _connState == VpnState.loading;
+  bool get isFailed => _connState == VpnState.failed;
 
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
@@ -625,7 +625,7 @@ class VpnProvider extends ChangeNotifier {
     _userDisconnected = false;
     _lastStage = null;
     _selected = server;
-    _connState = ConnectionState.loading;
+    _connState = VpnState.loading;
     _statusMessage = 'Connecting...';
     _currentSource = _sourceLabel(server.source);
     notifyListeners();
@@ -635,11 +635,11 @@ class VpnProvider extends ChangeNotifier {
       () {
         if (isConnecting) {
           _disconnect();
-          _connState = ConnectionState.failed;
+          _connState = VpnState.failed;
           _statusMessage = 'Trying next server...';
           notifyListeners();
           Timer(const Duration(seconds: 2), () {
-            if (_connState == ConnectionState.failed) connectFastest();
+            if (_connState == VpnState.failed) connectFastest();
           });
         }
       },
@@ -652,7 +652,7 @@ class VpnProvider extends ChangeNotifier {
         await _connectOpenVPN(server);
       }
     } catch (_) {
-      _connState = ConnectionState.failed;
+      _connState = VpnState.failed;
       _connectionTimeout?.cancel();
       _statusMessage = 'Connection failed';
       notifyListeners();
@@ -688,7 +688,7 @@ class VpnProvider extends ChangeNotifier {
         } catch (_) {}
 
         if (serviceRunning) {
-          _connState = ConnectionState.connected;
+          _connState = VpnState.connected;
           _statusMessage = '';
           _triedServers.clear();
           if (!_trustedIps.contains(server.ip)) {
@@ -704,30 +704,30 @@ class VpnProvider extends ChangeNotifier {
           notifyListeners();
         } else {
           // الـ service ما شغّال فعلاً — جرب التالي
-          _connState = ConnectionState.failed;
+          _connState = VpnState.failed;
           _statusMessage = 'Trying next server...';
           _connectionTimeout?.cancel();
           notifyListeners();
           Timer(const Duration(seconds: 2), () {
-            if (_connState == ConnectionState.failed) connectFastest();
+            if (_connState == VpnState.failed) connectFastest();
           });
         }
       } else {
-        _connState = ConnectionState.failed;
+        _connState = VpnState.failed;
         _statusMessage = 'Trying next server...';
         _connectionTimeout?.cancel();
         notifyListeners();
         Timer(const Duration(seconds: 2), () {
-          if (_connState == ConnectionState.failed) connectFastest();
+          if (_connState == VpnState.failed) connectFastest();
         });
       }
     } catch (_) {
-      _connState = ConnectionState.failed;
+      _connState = VpnState.failed;
       _connectionTimeout?.cancel();
       _statusMessage = 'V2Ray error — trying next...';
       notifyListeners();
       Timer(const Duration(seconds: 2), () {
-        if (_connState == ConnectionState.failed) connectFastest();
+        if (_connState == VpnState.failed) connectFastest();
       });
     }
   }
@@ -744,7 +744,7 @@ class VpnProvider extends ChangeNotifier {
         final running = await _v2rayChannel.invokeMethod('status') == true;
         if (!running && isConnected && !_userDisconnected) {
           // الـ VPN انقطع من تلقاء نفسه
-          _connState = ConnectionState.disconnected;
+          _connState = VpnState.disconnected;
           _selected = null;
           _statusMessage = '';
           _stopStats();
@@ -757,7 +757,7 @@ class VpnProvider extends ChangeNotifier {
   }
 
   Future<void> _connectOpenVPN(VpnServer server) async {
-    _connState = ConnectionState.failed;
+    _connState = VpnState.failed;
     _statusMessage = 'OpenVPN not supported for this server';
     notifyListeners();
   }
@@ -806,7 +806,7 @@ class VpnProvider extends ChangeNotifier {
       } catch (_) { stopped = true; break; }
     }
 
-    _connState = ConnectionState.disconnected;
+    _connState = VpnState.disconnected;
     _selected = null;
     _statusMessage = '';
     _currentSource = '';

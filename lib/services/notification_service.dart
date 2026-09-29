@@ -2,7 +2,7 @@ import 'package:flutter/services.dart';
 
 /// يتحكم بالـ notification الدائمة عند الاتصال
 class NotificationService {
-  static const _channel = MethodChannel('com.onyxvpn/notification');
+  static const _channel = MethodChannel('com.onyxvpn.notification');
 
   // يستقبل أمر الفصل من زر الـ notification
   static void Function()? onDisconnect;

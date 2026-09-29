@@ -153,11 +153,11 @@ class _PowerOrbState extends State<_PowerOrb>
     if (loading) {
       label = 'Loading...';
     } else if (failed) {
-      label = vpn.statusMessage;
+      label = vpn.statusMessage.isNotEmpty ? vpn.statusMessage : 'Tap to\nRetry';
     } else if (connected) {
       label = 'Tap to\ndisconnect';
     } else if (connecting) {
-      label = vpn.statusMessage;
+      label = vpn.statusMessage.isNotEmpty ? vpn.statusMessage : 'Connecting...';
     } else {
       label = 'Quick\nConnect';
     }
@@ -172,10 +172,11 @@ class _PowerOrbState extends State<_PowerOrb>
           scale: scale,
           child: GestureDetector(
             onTap: () {
-              if (loading || failed) return;
+              if (loading) return;
               if (connected || connecting) {
                 vpn.disconnect();
               } else {
+                // ✅ يشتغل حتى لو failed — يعيد المحاولة
                 vpn.connectFastest();
               }
             },
@@ -452,7 +453,7 @@ class _ServersPanelState extends State<_ServersPanel> {
                         onRefresh: () => vpn.fetchServers(forceRefresh: true),
                         child: ListView.separated(
                           padding: const EdgeInsets.symmetric(horizontal: 24),
-                          itemCount: vpn.servers.take(8).length,
+                          itemCount: vpn.servers.length > 8 ? 8 : vpn.servers.length,
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 8),
                           itemBuilder: (_, i) {
