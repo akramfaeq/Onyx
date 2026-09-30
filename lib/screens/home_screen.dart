@@ -4,9 +4,26 @@ import '../services/vpn_provider.dart';
 import '../services/ads_service.dart';
 import 'servers_screen.dart';
 import 'info_screen.dart';
+import 'debug_screen.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _tapCount = 0;
+
+  void _onTitleTap() {
+    _tapCount++;
+    if (_tapCount >= 5) {
+      _tapCount = 0;
+      Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DebugScreen()));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -40,25 +57,28 @@ class _TopBar extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          RichText(
-            text: const TextSpan(children: [
-              TextSpan(
-                text: 'Onyx',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-              TextSpan(
-                text: 'VPN',
-                style: TextStyle(
-                    color: Color(0xFF7B5CF0),
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-            ]),
+          GestureDetector(
+            onTap: _onTitleTap,
+            child: RichText(
+              text: const TextSpan(children: [
+                TextSpan(
+                  text: 'Onyx',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+                TextSpan(
+                  text: 'VPN',
+                  style: TextStyle(
+                      color: Color(0xFF7B5CF0),
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+              ]),
+            ),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
@@ -153,11 +173,11 @@ class _PowerOrbState extends State<_PowerOrb>
     if (loading) {
       label = 'Loading...';
     } else if (failed) {
-      label = vpn.statusMessage.isNotEmpty ? vpn.statusMessage : 'Tap to\nRetry';
+      label = vpn.statusMessage;
     } else if (connected) {
       label = 'Tap to\ndisconnect';
     } else if (connecting) {
-      label = vpn.statusMessage.isNotEmpty ? vpn.statusMessage : 'Connecting...';
+      label = vpn.statusMessage;
     } else {
       label = 'Quick\nConnect';
     }
@@ -172,11 +192,10 @@ class _PowerOrbState extends State<_PowerOrb>
           scale: scale,
           child: GestureDetector(
             onTap: () {
-              if (loading) return;
+              if (loading || failed) return;
               if (connected || connecting) {
                 vpn.disconnect();
               } else {
-                // ✅ يشتغل حتى لو failed — يعيد المحاولة
                 vpn.connectFastest();
               }
             },
@@ -453,7 +472,7 @@ class _ServersPanelState extends State<_ServersPanel> {
                         onRefresh: () => vpn.fetchServers(forceRefresh: true),
                         child: ListView.separated(
                           padding: const EdgeInsets.symmetric(horizontal: 24),
-                          itemCount: vpn.servers.length > 8 ? 8 : vpn.servers.length,
+                          itemCount: vpn.servers.take(8).length,
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 8),
                           itemBuilder: (_, i) {
