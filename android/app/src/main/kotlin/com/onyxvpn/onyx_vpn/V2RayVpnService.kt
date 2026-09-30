@@ -9,6 +9,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.net.ServerSocket
 import java.net.URI
 
 class V2RayVpnService : VpnService() {
@@ -32,47 +33,75 @@ class V2RayVpnService : VpnService() {
         }
         val config = intent?.getStringExtra("config") ?: return START_NOT_STICKY
         val name   = intent.getStringExtra("name") ?: "OnyxVPN"
-        startAll(config, name)
+        Thread { startAll(config, name) }.start()
         return START_STICKY
     }
 
-    // ─── START ALL ────────────────────────────────────────────
     private fun startAll(rawConfig: String, name: String) {
         try {
-            stopAll() // نظّف أي شي شغّال قبل
+            stopAll()
 
             // 1. حوّل الكونفيغ لـ JSON
             val jsonConfig = parseConfigToJson(rawConfig) ?: run {
-                Log.e(TAG, "Failed to parse config: $rawConfig")
+                Log.e(TAG, "Failed to parse config: ${rawConfig.take(100)}")
                 return
             }
+            Log.d(TAG, "Parsed config: ${jsonConfig.take(200)}")
 
-            // 2. انسخ الملفات من assets
-            val xrayBin      = copyAsset("xray").also { it.setExecutable(true) }
-            val tun2socksBin = copyAsset("tun2socks").also { it.setExecutable(true) }
-            copyAsset("geoip.dat")
-            copyAsset("geosite.dat")
+            // 2. انسخ الملفات — دايماً اعد النسخ عشان تتحدث
+            val xrayBin      = copyAssetForce("xray").also { it.setExecutable(true) }
+            val tun2socksBin = copyAssetForce("tun2socks").also { it.setExecutable(true) }
+            copyAssetForce("geoip.dat")
+            copyAssetForce("geosite.dat")
 
-            // 3. احفظ الـ JSON config
+            Log.i(TAG, "xray exists: ${xrayBin.exists()}, size: ${xrayBin.length()}")
+            Log.i(TAG, "tun2socks exists: ${tun2socksBin.exists()}, size: ${tun2socksBin.length()}")
+
+            // 3. احفظ الـ config
             val configFile = File(filesDir, "xray_config.json")
             configFile.writeText(jsonConfig)
-            Log.d(TAG, "Config: $jsonConfig")
 
             // 4. شغّل xray
-            xrayProcess = ProcessBuilder(
-                xrayBin.absolutePath, "run", "-c", configFile.absolutePath
-            ).directory(filesDir).redirectErrorStream(true).start()
+            val xrayCmd = listOf(xrayBin.absolutePath, "run", "-c", configFile.absolutePath)
+            Log.i(TAG, "Starting xray: $xrayCmd")
 
-            logProcess("xray", xrayProcess)
+            xrayProcess = ProcessBuilder(xrayCmd)
+                .directory(filesDir)
+                .redirectErrorStream(true)
+                .start()
 
-            // 5. انتظر xray يبدأ
-            Thread.sleep(1000)
+            // اقرأ output xray فوراً
+            val xrayOutput = StringBuilder()
+            Thread {
+                xrayProcess?.inputStream?.bufferedReader()?.forEachLine { line ->
+                    Log.d(TAG, "xray: $line")
+                    xrayOutput.appendLine(line)
+                }
+            }.also { it.isDaemon = true }.start()
+
+            // 5. انتظر xray يبدأ ويفتح الـ port
+            var xrayReady = false
+            repeat(15) { i ->
+                Thread.sleep(500)
+                if (isPortOpen(SOCKS_PORT)) {
+                    xrayReady = true
+                    Log.i(TAG, "✅ xray ready after ${(i+1)*500}ms")
+                    return@repeat
+                }
+                Log.d(TAG, "Waiting for xray... ${(i+1)*500}ms")
+            }
+
+            if (!xrayReady) {
+                Log.e(TAG, "❌ xray failed to start! Output: $xrayOutput")
+                stopAll()
+                return
+            }
 
             // 6. أنشئ الـ VPN interface
             vpnInterface = Builder()
                 .setSession(name)
                 .addAddress("10.0.0.2", 32)
-                .addRoute("0.0.0.0", 0)          // كل الترافيك يمر بالـ VPN
+                .addRoute("0.0.0.0", 0)
                 .addDnsServer("1.1.1.1")
                 .addDnsServer("8.8.8.8")
                 .setMtu(1500)
@@ -82,35 +111,59 @@ class V2RayVpnService : VpnService() {
                 .establish()
 
             if (vpnInterface == null) {
-                Log.e(TAG, "VPN interface is null — permission denied?")
+                Log.e(TAG, "❌ VPN interface null — no permission?")
                 stopAll()
                 return
             }
 
             val tunFd = vpnInterface!!.fd
-            Log.i(TAG, "VPN interface established, fd=$tunFd")
+            Log.i(TAG, "VPN interface fd=$tunFd")
 
-            // 7. شغّل tun2socks — يربط الـ VPN interface بـ xray SOCKS
-            tun2socksProcess = ProcessBuilder(
+            // 7. شغّل tun2socks
+            val tun2socksCmd = listOf(
                 tun2socksBin.absolutePath,
                 "--device", "fd://$tunFd",
                 "--proxy",  "socks5://127.0.0.1:$SOCKS_PORT",
                 "--loglevel", "warning"
-            ).directory(filesDir).redirectErrorStream(true).start()
+            )
+            Log.i(TAG, "Starting tun2socks: $tun2socksCmd")
 
-            logProcess("tun2socks", tun2socksProcess)
+            tun2socksProcess = ProcessBuilder(tun2socksCmd)
+                .directory(filesDir)
+                .redirectErrorStream(true)
+                .start()
+
+            Thread {
+                tun2socksProcess?.inputStream?.bufferedReader()?.forEachLine { line ->
+                    Log.d(TAG, "tun2socks: $line")
+                }
+            }.also { it.isDaemon = true }.start()
+
+            Thread.sleep(500)
+
+            // تحقق إن tun2socks لا يزال شغّال
+            val t2sAlive = tun2socksProcess?.isAlive ?: false
+            Log.i(TAG, "tun2socks alive: $t2sAlive")
 
             isRunning = true
             Log.i(TAG, "✅ VPN started: $name")
             VpnNotificationService.show(this, name, -1)
 
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting VPN: ${e.message}")
+            Log.e(TAG, "Error starting VPN: ${e.message}", e)
             stopAll()
         }
     }
 
-    // ─── STOP ALL ─────────────────────────────────────────────
+    private fun isPortOpen(port: Int): Boolean {
+        return try {
+            val socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 300)
+            socket.close()
+            true
+        } catch (_: Exception) { false }
+    }
+
     private fun stopAll() {
         try { tun2socksProcess?.destroy(); tun2socksProcess = null } catch (_: Exception) {}
         try { xrayProcess?.destroy();      xrayProcess      = null } catch (_: Exception) {}
@@ -121,20 +174,14 @@ class V2RayVpnService : VpnService() {
         Log.i(TAG, "✅ VPN stopped")
     }
 
-    // ─── LOG PROCESS ──────────────────────────────────────────
-    private fun logProcess(name: String, process: Process?) {
-        process ?: return
-        Thread {
-            process.inputStream.bufferedReader().forEachLine { Log.d(TAG, "$name: $it") }
-        }.also { it.isDaemon = true }.start()
-    }
-
-    // ─── COPY ASSET ───────────────────────────────────────────
-    private fun copyAsset(name: String): File {
+    // انسخ دايماً بغض النظر إذا موجود
+    private fun copyAssetForce(name: String): File {
         val out = File(filesDir, name)
-        if (!out.exists()) {
+        try {
             assets.open(name).use { i -> out.outputStream().use { o -> i.copyTo(o) } }
-            Log.i(TAG, "Copied asset: $name")
+            Log.i(TAG, "Copied asset: $name (${out.length()} bytes)")
+        } catch (e: Exception) {
+            Log.w(TAG, "Asset not found: $name — ${e.message}")
         }
         return out
     }
@@ -142,12 +189,12 @@ class V2RayVpnService : VpnService() {
     // ─── PARSE CONFIG ─────────────────────────────────────────
     private fun parseConfigToJson(config: String): String? = try {
         when {
-            config.startsWith("vmess://")    -> parseVmess(config)
-            config.startsWith("vless://")    -> parseVless(config)
-            config.startsWith("trojan://")   -> parseTrojan(config)
-            config.startsWith("ss://")       -> parseShadowsocks(config)
+            config.startsWith("vmess://")     -> parseVmess(config)
+            config.startsWith("vless://")     -> parseVless(config)
+            config.startsWith("trojan://")    -> parseTrojan(config)
+            config.startsWith("ss://")        -> parseShadowsocks(config)
             config.startsWith("hysteria2://") ||
-            config.startsWith("hy2://")      -> parseHysteria2(config)
+            config.startsWith("hy2://")       -> parseHysteria2(config)
             else -> null
         }
     } catch (e: Exception) {
@@ -155,96 +202,66 @@ class V2RayVpnService : VpnService() {
         null
     }
 
-    // ─── VMess ────────────────────────────────────────────────
     private fun parseVmess(config: String): String {
         val obj = JSONObject(String(Base64.decode(config.removePrefix("vmess://"), Base64.DEFAULT)))
         return buildXrayJson(
-            address  = obj.optString("add"),
-            port     = obj.optInt("port", 443),
-            id       = obj.optString("id"),
-            protocol = "vmess",
-            network  = obj.optString("net", "tcp"),
-            tls      = obj.optString("tls") == "tls",
-            host     = obj.optString("host"),
-            path     = obj.optString("path"),
-            security = "auto"
+            address = obj.optString("add"), port = obj.optInt("port", 443),
+            id = obj.optString("id"), protocol = "vmess",
+            network = obj.optString("net", "tcp"), tls = obj.optString("tls") == "tls",
+            host = obj.optString("host"), path = obj.optString("path"), security = "auto"
         )
     }
 
-    // ─── VLESS ────────────────────────────────────────────────
     private fun parseVless(config: String): String {
-        val uri    = URI(config)
-        val params = parseQuery(uri.rawQuery ?: "")
+        val uri = URI(config); val params = parseQuery(uri.rawQuery ?: "")
         return buildXrayJson(
-            address  = uri.host ?: "",
-            port     = if (uri.port > 0) uri.port else 443,
-            id       = uri.userInfo ?: "",
-            protocol = "vless",
-            network  = params["type"] ?: "tcp",
-            tls      = (params["security"] ?: "") in listOf("tls", "reality"),
-            host     = params["sni"] ?: params["host"] ?: "",
-            path     = params["path"] ?: "",
-            security = "none",
-            flow     = params["flow"] ?: "",
-            pbk      = params["pbk"] ?: "",
-            sid      = params["sid"] ?: ""
+            address = uri.host ?: "", port = if (uri.port > 0) uri.port else 443,
+            id = uri.userInfo ?: "", protocol = "vless",
+            network = params["type"] ?: "tcp",
+            tls = (params["security"] ?: "") in listOf("tls", "reality"),
+            host = params["sni"] ?: params["host"] ?: "",
+            path = params["path"] ?: "", security = "none",
+            flow = params["flow"] ?: "", pbk = params["pbk"] ?: "", sid = params["sid"] ?: ""
         )
     }
 
-    // ─── Trojan ───────────────────────────────────────────────
     private fun parseTrojan(config: String): String {
-        val uri    = URI(config)
-        val params = parseQuery(uri.rawQuery ?: "")
+        val uri = URI(config); val params = parseQuery(uri.rawQuery ?: "")
         return buildXrayJson(
-            address  = uri.host ?: "",
-            port     = if (uri.port > 0) uri.port else 443,
-            id       = uri.userInfo ?: "",
-            protocol = "trojan",
-            network  = params["type"] ?: "tcp",
-            tls      = true,
-            host     = params["sni"] ?: uri.host ?: "",
-            path     = params["path"] ?: "",
-            security = "none"
+            address = uri.host ?: "", port = if (uri.port > 0) uri.port else 443,
+            id = uri.userInfo ?: "", protocol = "trojan",
+            network = params["type"] ?: "tcp", tls = true,
+            host = params["sni"] ?: uri.host ?: "", path = params["path"] ?: "", security = "none"
         )
     }
 
-    // ─── Shadowsocks ──────────────────────────────────────────
     private fun parseShadowsocks(config: String): String {
-        val raw    = config.removePrefix("ss://")
-        val atIdx  = raw.lastIndexOf('@')
+        val raw = config.removePrefix("ss://")
+        val atIdx = raw.lastIndexOf('@')
         val decoded = String(Base64.decode(raw.substring(0, atIdx), Base64.DEFAULT))
         val (method, password) = decoded.split(":", limit = 2)
         val hostPort = raw.substring(atIdx + 1).split("#")[0].split(":")
-        val host = hostPort[0]
-        val port = hostPort.getOrNull(1)?.toIntOrNull() ?: 443
-
         return JSONObject().apply {
             put("log", JSONObject().put("loglevel", "warning"))
             put("inbounds", JSONArray().put(socksInbound()))
             put("outbounds", JSONArray().put(JSONObject().apply {
-                put("tag", "proxy")
                 put("protocol", "shadowsocks")
                 put("settings", JSONObject().put("servers", JSONArray().put(JSONObject().apply {
-                    put("address", host)
-                    put("port", port)
-                    put("method", method)
-                    put("password", password)
+                    put("address", hostPort[0])
+                    put("port", hostPort.getOrNull(1)?.toIntOrNull() ?: 443)
+                    put("method", method); put("password", password)
                 })))
             }))
         }.toString()
     }
 
-    // ─── Hysteria2 ────────────────────────────────────────────
     private fun parseHysteria2(config: String): String {
-        val fixed  = config.replace("hy2://", "hysteria2://")
-        val uri    = URI(fixed)
+        val uri = URI(config.replace("hy2://", "hysteria2://"))
         val params = parseQuery(uri.rawQuery ?: "")
-
         return JSONObject().apply {
             put("log", JSONObject().put("loglevel", "warning"))
             put("inbounds", JSONArray().put(socksInbound()))
             put("outbounds", JSONArray().put(JSONObject().apply {
-                put("tag", "proxy")
                 put("protocol", "hysteria2")
                 put("settings", JSONObject().put("servers", JSONArray().put(JSONObject().apply {
                     put("address", uri.host ?: "")
@@ -260,63 +277,48 @@ class V2RayVpnService : VpnService() {
         }.toString()
     }
 
-    // ─── BUILD XRAY JSON ──────────────────────────────────────
     private fun buildXrayJson(
         address: String, port: Int, id: String, protocol: String,
         network: String = "tcp", tls: Boolean = false,
         host: String = "", path: String = "", security: String = "none",
         flow: String = "", pbk: String = "", sid: String = ""
     ): String {
-        // Stream settings
         val stream = JSONObject().apply {
             put("network", network)
             if (tls) {
                 if (pbk.isNotEmpty()) {
                     put("security", "reality")
                     put("realitySettings", JSONObject().apply {
-                        put("serverName", host)
-                        put("publicKey", pbk)
-                        put("shortId", sid)
-                        put("fingerprint", "chrome")
+                        put("serverName", host); put("publicKey", pbk)
+                        put("shortId", sid); put("fingerprint", "chrome")
                     })
                 } else {
                     put("security", "tls")
                     put("tlsSettings", JSONObject().apply {
-                        put("serverName", host)
-                        put("allowInsecure", false)
+                        put("serverName", host); put("allowInsecure", false)
                         put("fingerprint", "chrome")
                     })
                 }
             }
             when (network) {
-                "ws"   -> put("wsSettings", JSONObject().apply {
-                    put("path", path)
-                    put("headers", JSONObject().put("Host", host))
+                "ws" -> put("wsSettings", JSONObject().apply {
+                    put("path", path); put("headers", JSONObject().put("Host", host))
                 })
                 "grpc" -> put("grpcSettings", JSONObject().put("serviceName", path))
-                "h2"   -> put("httpSettings", JSONObject().apply {
-                    put("host", JSONArray().put(host))
-                    put("path", path)
+                "h2" -> put("httpSettings", JSONObject().apply {
+                    put("host", JSONArray().put(host)); put("path", path)
                 })
             }
         }
 
-        // User object
         val user = JSONObject().apply {
             put(if (protocol == "trojan") "password" else "id", id)
             when (protocol) {
-                "vless" -> {
-                    put("encryption", "none")
-                    if (flow.isNotEmpty()) put("flow", flow)
-                }
-                "vmess" -> {
-                    put("alterId", 0)
-                    put("security", security)
-                }
+                "vless" -> { put("encryption", "none"); if (flow.isNotEmpty()) put("flow", flow) }
+                "vmess" -> { put("alterId", 0); put("security", security) }
             }
         }
 
-        // Outbound key
         val settingsKey = when (protocol) {
             "trojan", "shadowsocks" -> "servers"
             else -> "vnext"
@@ -327,30 +329,25 @@ class V2RayVpnService : VpnService() {
             put("inbounds", JSONArray().put(socksInbound()))
             put("outbounds", JSONArray().apply {
                 put(JSONObject().apply {
-                    put("tag", "proxy")
-                    put("protocol", protocol)
+                    put("tag", "proxy"); put("protocol", protocol)
                     put("settings", JSONObject().put(settingsKey, JSONArray().put(JSONObject().apply {
-                        put("address", address)
-                        put("port", port)
+                        put("address", address); put("port", port)
                         put("users", JSONArray().put(user))
                     })))
                     put("streamSettings", stream)
                 })
                 put(JSONObject().apply { put("tag", "direct"); put("protocol", "freedom") })
-                put(JSONObject().apply { put("tag", "block");  put("protocol", "blackhole") })
+                put(JSONObject().apply { put("tag", "block"); put("protocol", "blackhole") })
             })
             put("routing", JSONObject().apply {
                 put("domainStrategy", "IPIfNonMatch")
                 put("rules", JSONArray().apply {
-                    // ترافيك إيران مباشر بدون VPN
                     put(JSONObject().apply {
-                        put("type", "field")
-                        put("outboundTag", "direct")
+                        put("type", "field"); put("outboundTag", "direct")
                         put("ip", JSONArray().apply { put("geoip:private"); put("geoip:ir") })
                     })
                     put(JSONObject().apply {
-                        put("type", "field")
-                        put("outboundTag", "direct")
+                        put("type", "field"); put("outboundTag", "direct")
                         put("domain", JSONArray().put("geosite:ir"))
                     })
                 })
@@ -358,18 +355,12 @@ class V2RayVpnService : VpnService() {
         }.toString()
     }
 
-    // ─── SOCKS INBOUND ────────────────────────────────────────
     private fun socksInbound() = JSONObject().apply {
-        put("port", SOCKS_PORT)
-        put("protocol", "socks")
+        put("port", SOCKS_PORT); put("protocol", "socks")
         put("listen", "127.0.0.1")
-        put("settings", JSONObject().apply {
-            put("auth", "noauth")
-            put("udp", true)
-        })
+        put("settings", JSONObject().apply { put("auth", "noauth"); put("udp", true) })
     }
 
-    // ─── QUERY PARSER ─────────────────────────────────────────
     private fun parseQuery(query: String): Map<String, String> =
         if (query.isEmpty()) emptyMap()
         else query.split("&").mapNotNull {
