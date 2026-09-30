@@ -48,14 +48,18 @@ class V2RayVpnService : VpnService() {
             }
             Log.d(TAG, "Parsed config: ${jsonConfig.take(200)}")
 
-            // 2. انسخ الملفات — دايماً اعد النسخ عشان تتحدث
-            val xrayBin      = copyAssetForce("xray").also { it.setExecutable(true) }
-            val tun2socksBin = copyAssetForce("tun2socks").also { it.setExecutable(true) }
+            // 2. جيب الـ binaries من nativeLibraryDir (مو compressed + executable)
+            val nativeDir    = applicationInfo.nativeLibraryDir
+            val xrayBin      = File("$nativeDir/libxray.so").also { it.setExecutable(true) }
+            val tun2socksBin = File("$nativeDir/libtun2socks.so").also { it.setExecutable(true) }
+
+            // انسخ geoip و geosite من assets للـ filesDir
             copyAssetForce("geoip.dat")
             copyAssetForce("geosite.dat")
 
-            Log.i(TAG, "xray exists: ${xrayBin.exists()}, size: ${xrayBin.length()}")
-            Log.i(TAG, "tun2socks exists: ${tun2socksBin.exists()}, size: ${tun2socksBin.length()}")
+            Log.i(TAG, "nativeDir: $nativeDir")
+            Log.i(TAG, "xray: ${xrayBin.exists()}, size: ${xrayBin.length()}")
+            Log.i(TAG, "tun2socks: ${tun2socksBin.exists()}, size: ${tun2socksBin.length()}")
 
             // 3. احفظ الـ config
             val configFile = File(filesDir, "xray_config.json")
