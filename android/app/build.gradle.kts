@@ -20,12 +20,11 @@ android {
 
     defaultConfig {
         applicationId = "com.onyxvpn.onyx_vpn"
-        minSdk = 21  // Android 5+ — مهم عشان VpnService يشتغل
+        minSdk = 21
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
-        // عشان xray و tun2socks يشتغلون فقط على arm64
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -48,9 +47,15 @@ android {
         }
     }
 
-    // عشان الـ assets الكبيرة (xray, tun2socks) تنضغط صح
+    // ─── مهم جداً: منع ضغط الملفات الكبيرة ──────────────────
+    // "" = ملفات بدون امتداد (xray, tun2socks)
     androidResources {
-        noCompress += listOf("dat", "xray", "tun2socks")
+        noCompress += listOf("", "dat", "so", "bin")
+    }
+
+    // منع Flutter من ضغط assets
+    aaptOptions {
+        noCompress("", "dat", "so", "bin")
     }
 }
 
