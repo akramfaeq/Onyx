@@ -16,15 +16,6 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _tapCount = 0;
 
-  void _onTitleTap() {
-    _tapCount++;
-    if (_tapCount >= 5) {
-      _tapCount = 0;
-      Navigator.push(context,
-          MaterialPageRoute(builder: (_) => const DebugScreen()));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -49,7 +40,23 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ─── Top Bar ──────────────────────────────────────────────────
-class _TopBar extends StatelessWidget {
+class _TopBar extends StatefulWidget {
+  @override
+  State<_TopBar> createState() => _TopBarState();
+}
+
+class _TopBarState extends State<_TopBar> {
+  int _tapCount = 0;
+
+  void _onTitleTap() {
+    _tapCount++;
+    if (_tapCount >= 5) {
+      _tapCount = 0;
+      Navigator.push(context,
+          MaterialPageRoute(builder: (_) => const DebugScreen()));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
