@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -19,6 +20,7 @@ class VpnNotificationService : Service() {
 
         const val ACTION_SHOW       = "com.onyxvpn.ACTION_SHOW"
         const val ACTION_HIDE       = "com.onyxvpn.ACTION_HIDE"
+        // ✅ زرنا — يرسل broadcast للـ Flutter بدون dialog
         const val ACTION_DISCONNECT = "com.onyxvpn.DISCONNECT"
 
         fun show(context: Context, serverName: String, ping: Int = -1) {
@@ -35,13 +37,11 @@ class VpnNotificationService : Service() {
         }
 
         fun hide(context: Context) {
-            try {
-                context.startService(
-                    Intent(context, VpnNotificationService::class.java).apply {
-                        action = ACTION_HIDE
-                    }
-                )
-            } catch (_: Exception) {}
+            context.startService(
+                Intent(context, VpnNotificationService::class.java).apply {
+                    action = ACTION_HIDE
+                }
+            )
         }
     }
 
@@ -50,8 +50,6 @@ class VpnNotificationService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
-        // لازم نسوي startForeground فوراً عشان Android 8+ ما يكرهنا
-        startForeground(NOTIFICATION_ID, buildNotification("Connecting...", -1))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -59,9 +57,7 @@ class VpnNotificationService : Service() {
             ACTION_SHOW -> {
                 val serverName = intent.getStringExtra("server_name") ?: "VPN"
                 val ping = intent.getIntExtra("ping", -1)
-                // حدّث الـ notification بمعلومات الاتصال
-                val nm = getSystemService(NotificationManager::class.java)
-                nm.notify(NOTIFICATION_ID, buildNotification(serverName, ping))
+                startForeground(NOTIFICATION_ID, buildNotification(serverName, ping))
             }
             ACTION_HIDE -> {
                 stopForeground(true)
@@ -81,12 +77,11 @@ class VpnNotificationService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // زر Disconnect — يرسل broadcast للـ MainActivity
+        // ✅ زر Disconnect مالتنا — يرسل broadcast مباشرة للـ Flutter
+        // بدون ما يمر على OpenVPN = بدون dialog
         val disconnectIntent = PendingIntent.getBroadcast(
             this, 1,
-            Intent(ACTION_DISCONNECT).apply {
-                `package` = packageName // مهم لـ Android 14+
-            },
+            Intent(ACTION_DISCONNECT),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -101,6 +96,7 @@ class VpnNotificationService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setColor(0xFF7B5CF0.toInt())
             .setColorized(true)
+            // ✅ زر واحد فقط — مالتنا — بدون dialog
             .addAction(
                 NotificationCompat.Action.Builder(
                     R.drawable.ic_disconnect,
@@ -115,18 +111,17 @@ class VpnNotificationService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = getSystemService(NotificationManager::class.java)
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
-                nm.createNotificationChannel(
-                    NotificationChannel(
-                        CHANNEL_ID,
-                        "OnyxVPN Status",
-                        NotificationManager.IMPORTANCE_LOW
-                    ).apply {
-                        description = "VPN connection status"
-                        setShowBadge(false)
-                        enableLights(false)
-                        enableVibration(false)
-                    }
-                )
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    "OnyxVPN Status",
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "VPN connection status"
+                    setShowBadge(false)
+                    enableLights(false)
+                    enableVibration(false)
+                }
+                nm.createNotificationChannel(channel)
             }
         }
     }

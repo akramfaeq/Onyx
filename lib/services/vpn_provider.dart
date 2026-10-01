@@ -4,40 +4,40 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:openvpn_flutter/openvpn_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
 
-// ─── Channels ─────────────────────────────────────────────────
-const _notifChannel  = MethodChannel('com.onyxvpn.notification');
-const _v2rayChannel  = MethodChannel('com.onyxvpn.v2ray');
-const _eventChannel  = EventChannel('com.onyxvpn.v2ray.status');
+const _notifChannel = MethodChannel('com.onyxvpn.notification');
 
-// ─── Helpers ──────────────────────────────────────────────────
-String cleanCountryName(String raw) =>
-    raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
-
-// IP → country via ip-api.com (مجاني بدون مفتاح)
-Future<Map<String, String>> _lookupCountry(String ip) async {
-  try {
-    final res = await http
-        .get(Uri.parse('http://ip-api.com/json/$ip?fields=country,countryCode'))
-        .timeout(const Duration(seconds: 5));
-    if (res.statusCode == 200) {
-      final j = jsonDecode(res.body) as Map<String, dynamic>;
-      return {
-        'country': j['country'] as String? ?? 'Unknown',
-        'code': j['countryCode'] as String? ?? 'XX',
-      };
-    }
-  } catch (_) {}
-  return {'country': 'Unknown', 'code': 'XX'};
+Future<void> _showNotification(String serverName, int ping) async {
+  try { await _notifChannel.invokeMethod('show', {'server_name': serverName, 'ping': ping}); } catch (_) {}
+}
+Future<void> _hideNotification() async {
+  try { await _notifChannel.invokeMethod('hide'); } catch (_) {}
 }
 
-// ─── Connection State ─────────────────────────────────────────
+String cleanCountryName(String raw) => raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
+
+String formatSpeed(String raw) {
+  final num = double.tryParse(raw.replaceAll(RegExp(r'[^0-9.]'), ''));
+  if (num == null || num == 0) return '0 B/s';
+  if (num >= 1024 * 1024) return '${(num / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  if (num >= 1024) return '${(num / 1024).toStringAsFixed(1)} KB/s';
+  return '${num.toStringAsFixed(0)} B/s';
+}
+
 enum ConnectionState { disconnected, loading, connected, failed }
 
-// ─── VpnServer ────────────────────────────────────────────────
+// ─── نوع السيرفر ──────────────────────────────────────────────
+enum ServerType {
+  openVpn,   // OpenVPN Gate — الأساس الشغّال
+  v2ray,     // V2Ray/VLESS/Trojan — للمستقبل مع Cloudflare
+  cloudflare // Cloudflare WARP — قريباً
+}
+
 class VpnServer {
   final String countryName;
   final String countryCode;
@@ -45,9 +45,8 @@ class VpnServer {
   final int ping;
   final String ovpnConfig;
   final int numSessions;
+  final ServerType serverType;
   final String protocol;
-  final String source;
-  final bool isHardToBlock;
   int realPing;
 
   VpnServer({
@@ -57,18 +56,19 @@ class VpnServer {
     required this.ping,
     required this.ovpnConfig,
     this.numSessions = 0,
-    this.protocol = 'unknown',
-    this.source = 'supabase',
-    this.isHardToBlock = false,
+    this.serverType = ServerType.openVpn,
+    this.protocol = 'openvpn',
     this.realPing = -1,
   });
 
   int get effectivePing => realPing > 0 ? realPing : ping;
 
   int get score {
-    final hardBonus = isHardToBlock ? -100 : 0;
     final congestion = (numSessions / 10).clamp(0, 200).toInt();
-    return effectivePing + congestion + hardBonus;
+    // V2Ray وCloudflare يأخذون أولوية أعلى
+    final typeBonus = serverType == ServerType.cloudflare ? -200
+        : serverType == ServerType.v2ray ? -100 : 0;
+    return effectivePing + congestion + typeBonus;
   }
 
   String get flag {
@@ -94,9 +94,14 @@ class VpnServer {
     return 1;
   }
 
-  bool get isV2Ray => [
-    'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'vless-reality'
-  ].contains(protocol);
+  // badge يبيّن نوع السيرفر
+  String get typeBadge {
+    switch (serverType) {
+      case ServerType.cloudflare: return '☁️';
+      case ServerType.v2ray:      return '⚡';
+      case ServerType.openVpn:    return '';
+    }
+  }
 
   Map<String, dynamic> toMap() => {
     'country_name': countryName,
@@ -107,35 +112,35 @@ class VpnServer {
     'ovpn_config': ovpnConfig,
     'num_sessions': numSessions,
     'protocol': protocol,
-    'source': source,
-    'is_hard_to_block': isHardToBlock,
+    'server_type': serverType.index,
   };
 
-  VpnServer copyWith({String? countryName, String? countryCode}) => VpnServer(
-    countryName: countryName ?? this.countryName,
-    countryCode: countryCode ?? this.countryCode,
-    ip: ip,
-    ping: ping,
-    ovpnConfig: ovpnConfig,
-    numSessions: numSessions,
-    protocol: protocol,
-    source: source,
-    isHardToBlock: isHardToBlock,
-    realPing: realPing,
-  );
-
-  factory VpnServer.fromMap(Map<String, dynamic> m) => VpnServer(
-    countryName: cleanCountryName(m['country_name'] ?? ''),
-    countryCode: m['country_code'] ?? 'XX',
-    ip: m['ip'] ?? '',
-    ping: (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig: m['ovpn_config'] ?? '',
-    numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
-    protocol: m['protocol'] ?? 'unknown',
-    source: m['source'] ?? 'supabase',
-    isHardToBlock: m['is_hard_to_block'] == true,
-    realPing: (m['real_ping'] as num?)?.toInt() ?? -1,
-  );
+  factory VpnServer.fromMap(Map<String, dynamic> m) {
+    final proto = m['protocol'] ?? 'openvpn';
+    final typeIndex = m['server_type'] as int?;
+    ServerType type;
+    if (typeIndex != null) {
+      type = ServerType.values[typeIndex.clamp(0, ServerType.values.length - 1)];
+    } else {
+      // تخمين النوع من البروتوكول
+      if (['vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2'].contains(proto)) {
+        type = ServerType.v2ray;
+      } else {
+        type = ServerType.openVpn;
+      }
+    }
+    return VpnServer(
+      countryName: cleanCountryName(m['country_name'] ?? ''),
+      countryCode: m['country_code'] ?? 'XX',
+      ip: m['ip'] ?? '',
+      ping: (m['ping'] as num?)?.toInt() ?? 999,
+      ovpnConfig: m['ovpn_config'] ?? '',
+      numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
+      serverType: type,
+      protocol: proto,
+      realPing: (m['real_ping'] as num?)?.toInt() ?? -1,
+    );
+  }
 }
 
 // ─── VpnProvider ──────────────────────────────────────────────
@@ -178,182 +183,234 @@ class VpnProvider extends ChangeNotifier {
   Timer? _statsTimer;
   Timer? _connectionTimeout;
 
+  // ─── OpenVPN ──────────────────────────────────────────────
+  OpenVPN? _vpn;
+
+  // ─── V2Ray ────────────────────────────────────────────────
+  FlutterV2ray? _v2ray;
+
+  final List<String> _trustedIps = [];
   bool _userDisconnected = false;
-  static const int _timeoutSeconds = 30;
+  bool _isSwitchingServer = false;
+  Timer? _disconnectDebounce;
+  VPNStage? _lastStage;
+  static const int _timeoutSeconds = 25;
   final Set<String> _triedServers = {};
-  final List<String> _trustedIps  = [];
 
-  // StreamSubscription للـ status events من Android
-  StreamSubscription? _statusSub;
-
-  // ─── روابط المصادر ────────────────────────────────────────
-  static const _source1Urls = [
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/vless.txt',
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt',
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/trojan.txt',
-  ];
-  static const _source2Urls = [
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt',
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/reality.txt',
-  ];
-  static const _source3Urls = [
-    'https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt',
-    'https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub2.txt',
-  ];
-  static const _source4Urls = [
-    'https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/mix',
-    'https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/hysteria2',
-  ];
-
-  // ─── Parse ────────────────────────────────────────────────
-  String _detectProtocol(String c) {
-    if (c.startsWith('vless://')) {
-      return (c.toLowerCase().contains('reality') ||
-              c.toLowerCase().contains('xtls'))
-          ? 'vless-reality'
-          : 'vless';
-    }
-    if (c.startsWith('vmess://'))    return 'vmess';
-    if (c.startsWith('trojan://'))   return 'trojan';
-    if (c.startsWith('ss://'))       return 'shadowsocks';
-    if (c.startsWith('hysteria2://') || c.startsWith('hy2://')) return 'hysteria2';
-    return 'unknown';
+  VpnProvider() {
+    _initOpenVpn();
+    _initV2Ray();
   }
 
-  bool _isHardToBlock(String p) =>
-      ['hysteria2', 'vless-reality', 'vless'].contains(p);
+  // ─── Init OpenVPN ─────────────────────────────────────────
+  void _initOpenVpn() {
+    _vpn = OpenVPN(
+      onVpnStageChanged: (stage, _) {
+        if (stage == _lastStage) return;
+        _lastStage = stage;
 
-  String _decodeIfBase64(String text) {
-    try {
-      final d = utf8.decode(base64.decode(base64.normalize(text)));
-      if (['vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria2://']
-          .any((p) => d.contains(p))) return d;
-    } catch (_) {}
-    return text;
-  }
+        if (stage == VPNStage.connected) {
+          _disconnectDebounce?.cancel();
+          _connectionTimeout?.cancel();
+          _connState = ConnectionState.connected;
+          _statusMessage = '';
+          _currentSource = 'OpenVPN';
+          _triedServers.clear();
+          if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
+            _trustedIps.insert(0, _selected!.ip);
+            if (_trustedIps.length > 10) _trustedIps.removeLast();
+          }
+          _connectedAt = DateTime.now();
+          _startStats();
+          AdsService.showInterstitialAfterSuccess(1);
+          _showNotification(_selected?.countryName ?? 'VPN', _selected?.effectivePing ?? -1);
+          notifyListeners();
 
-  List<String> _parseConfigs(String raw) {
-    final text = _decodeIfBase64(raw.trim());
-    const px = ['vless://', 'vmess://', 'trojan://', 'ss://', 'hysteria2://', 'hy2://'];
-    return text.split('\n').map((l) => l.trim()).where((l) => px.any(l.startsWith)).toList();
-  }
-
-  String _extractHost(String config) {
-    try {
-      final after = config.split('://').skip(1).join('://');
-      if (config.startsWith('vmess://')) {
-        final d = utf8.decode(base64.decode(base64.normalize(after)));
-        return (jsonDecode(d) as Map<String, dynamic>)['add'] ?? '';
-      }
-      final at = after.contains('@') ? after.split('@').last : after;
-      return at.split(':').first.split('?').first.split('#').first;
-    } catch (_) {
-      return '';
-    }
-  }
-
-  VpnServer? _configToServer(String config, String src) {
-    final proto = _detectProtocol(config);
-    if (proto == 'unknown') return null;
-    final host = _extractHost(config);
-    if (host.isEmpty) return null;
-    return VpnServer(
-      ip: host,
-      countryName: 'Unknown',
-      countryCode: 'XX',
-      ping: _isHardToBlock(proto) ? 80 : 180,
-      ovpnConfig: config,
-      protocol: proto,
-      source: src,
-      isHardToBlock: _isHardToBlock(proto),
+        } else if (stage == VPNStage.disconnected) {
+          _disconnectDebounce?.cancel();
+          _disconnectDebounce = Timer(const Duration(milliseconds: 1500), () {
+            if (_isSwitchingServer) return;
+            _connectionTimeout?.cancel();
+            _stopStats();
+            if (_userDisconnected) {
+              _connState = ConnectionState.disconnected;
+              _statusMessage = '';
+            } else if (_connState == ConnectionState.loading) {
+              _connState = ConnectionState.failed;
+              _statusMessage = 'Trying next server...';
+              notifyListeners();
+              Timer(const Duration(seconds: 2), () {
+                if (_connState == ConnectionState.failed) connectFastest();
+              });
+            } else {
+              _connState = ConnectionState.disconnected;
+              _statusMessage = '';
+            }
+            notifyListeners();
+          });
+        } else if ([VPNStage.connecting, VPNStage.authenticating,
+                     VPNStage.vpn_generate_config, VPNStage.prepare].contains(stage)) {
+          _disconnectDebounce?.cancel();
+          _connState = ConnectionState.loading;
+          _statusMessage = stage == VPNStage.authenticating ? 'Authenticating...' : 'Connecting...';
+          notifyListeners();
+        }
+      },
+      onVpnStatusChanged: (status) {
+        if (status != null) {
+          _downloadSpeed = formatSpeed(status.byteIn ?? '0');
+          _uploadSpeed   = formatSpeed(status.byteOut ?? '0');
+          notifyListeners();
+        }
+      },
+    );
+    _vpn!.initialize(
+      groupIdentifier: 'com.onyxvpn.onyx_vpn',
+      providerBundleIdentifier: 'com.onyxvpn.onyx_vpn',
+      localizedDescription: 'OnyxVPN',
     );
   }
 
-  // ─── Fetch ────────────────────────────────────────────────
-  Future<String> _fetchText(String url) async {
+  // ─── Init V2Ray ───────────────────────────────────────────
+  void _initV2Ray() {
+    _v2ray = FlutterV2ray(
+      onStatusChanged: (status) {
+        if (status.state == 'CONNECTED') {
+          _connectionTimeout?.cancel();
+          _connState = ConnectionState.connected;
+          _statusMessage = '';
+          _currentSource = '⚡ V2Ray';
+          _triedServers.clear();
+          _connectedAt = DateTime.now();
+          _startStats();
+          AdsService.showInterstitialAfterSuccess(1);
+          _showNotification(_selected?.countryName ?? 'VPN', _selected?.effectivePing ?? -1);
+          notifyListeners();
+        } else if (status.state == 'DISCONNECTED') {
+          _stopStats();
+          if (!_userDisconnected && _connState == ConnectionState.loading) {
+            _connState = ConnectionState.failed;
+            _statusMessage = 'Trying next server...';
+            notifyListeners();
+            Timer(const Duration(seconds: 2), () {
+              if (_connState == ConnectionState.failed) connectFastest();
+            });
+          } else if (_userDisconnected) {
+            _connState = ConnectionState.disconnected;
+            _statusMessage = '';
+            notifyListeners();
+          }
+        }
+      },
+    );
+    _v2ray!.initializeV2Ray();
+  }
+
+  // ─── Connect To ───────────────────────────────────────────
+  Future<void> connectTo(VpnServer server) async {
+    if (_selected?.ip == server.ip && isConnected) return;
+
+    _connectionTimeout?.cancel();
+    _disconnectDebounce?.cancel();
+
+    if (isConnected || isConnecting) {
+      _isSwitchingServer = true;
+      await _disconnectCurrent();
+      await Future.delayed(const Duration(milliseconds: 800));
+      _isSwitchingServer = false;
+    }
+
+    if (server.ovpnConfig.isEmpty) return;
+
+    _userDisconnected = false;
+    _lastStage = null;
+    _selected = server;
+    _connState = ConnectionState.loading;
+    _statusMessage = 'Connecting...';
+    notifyListeners();
+
+    _connectionTimeout = Timer(const Duration(seconds: _timeoutSeconds), () {
+      if (isConnecting) {
+        _disconnectCurrent();
+        _connState = ConnectionState.failed;
+        _statusMessage = 'Trying next server...';
+        notifyListeners();
+        Timer(const Duration(seconds: 2), () {
+          if (_connState == ConnectionState.failed) connectFastest();
+        });
+      }
+    });
+
     try {
-      final r = await http.get(Uri.parse(url),
-          headers: {'User-Agent': 'Mozilla/5.0'})
-          .timeout(const Duration(seconds: 15));
-      if (r.statusCode == 200) return r.body;
-    } catch (_) {}
-    return '';
-  }
-
-  Future<List<VpnServer>> _fetchSource1() async {
-    final out = <VpnServer>[];
-    for (final u in _source1Urls) {
-      final raw = await _fetchText(u);
-      if (raw.isEmpty) continue;
-      for (final c in _parseConfigs(raw).take(40)) {
-        final s = _configToServer(c, 'source_1_all');
-        if (s != null) out.add(s);
+      if (server.serverType == ServerType.v2ray) {
+        // ─── V2Ray connection ──────────────────────────────
+        await _v2ray!.requestPermission();
+        await _v2ray!.startV2Ray(
+          remark: server.countryName,
+          config: server.ovpnConfig,
+          blockedApps: null,
+          bypassSubnets: null,
+          proxyOnly: false,
+        );
+      } else {
+        // ─── OpenVPN connection ────────────────────────────
+        _vpn?.connect(
+          server.ovpnConfig,
+          server.countryName,
+          username: 'vpn',
+          password: 'vpn',
+          certIsRequired: false,
+        );
       }
+    } catch (_) {
+      _connState = ConnectionState.failed;
+      _connectionTimeout?.cancel();
+      _statusMessage = 'Connection failed';
+      notifyListeners();
     }
-    return out;
   }
 
-  Future<List<VpnServer>> _fetchSource2() async {
-    final out = <VpnServer>[];
-    for (final u in _source2Urls) {
-      final raw = await _fetchText(u);
-      if (raw.isEmpty) continue;
-      for (final c in _parseConfigs(raw)
-          .where((c) => ['hysteria2', 'vless-reality'].contains(_detectProtocol(c)))
-          .take(30)) {
-        final s = _configToServer(c, 'source_2_hard');
-        if (s != null) out.add(s);
-      }
-    }
-    return out;
-  }
-
-  Future<List<VpnServer>> _fetchSource3() async {
-    final out = <VpnServer>[];
-    for (final u in _source3Urls) {
-      final raw = await _fetchText(u);
-      if (raw.isEmpty) continue;
-      for (final c in _parseConfigs(raw)
-          .where((c) => ['vless', 'trojan'].contains(_detectProtocol(c)))
-          .take(25)) {
-        final s = _configToServer(c, 'source_3_cloudflare');
-        if (s != null) out.add(VpnServer(
-          ip: s.ip, countryName: s.countryName, countryCode: s.countryCode,
-          ping: 60, ovpnConfig: s.ovpnConfig, protocol: s.protocol,
-          source: s.source, isHardToBlock: true,
-        ));
-      }
-    }
-    return out;
-  }
-
-  Future<List<VpnServer>> _fetchSource4() async {
-    final out = <VpnServer>[];
-    for (final u in _source4Urls) {
-      final raw = await _fetchText(u);
-      if (raw.isEmpty) continue;
-      for (final c in _parseConfigs(raw).take(40)) {
-        final s = _configToServer(c, 'source_4_tested');
-        if (s != null) out.add(VpnServer(
-          ip: s.ip, countryName: s.countryName, countryCode: s.countryCode,
-          ping: s.ping - 30, ovpnConfig: s.ovpnConfig, protocol: s.protocol,
-          source: s.source, isHardToBlock: s.isHardToBlock,
-        ));
-      }
-    }
-    return out;
-  }
-
-  Future<List<VpnServer>> _fetchSupabase() async {
+  Future<void> _disconnectCurrent() async {
     try {
-      final res = await Supabase.instance.client
-          .from('servers').select().eq('is_active', true)
-          .order('ping', ascending: true).limit(80);
-      return (res as List)
-          .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
-          .where((s) => s.ovpnConfig.isNotEmpty).toList();
+      if (_selected?.serverType == ServerType.v2ray) {
+        await _v2ray?.stopV2Ray();
+      } else {
+        _vpn?.disconnect();
+      }
     } catch (_) {}
-    return [];
+    _stopStats();
+  }
+
+  // ─── Connect Fastest ──────────────────────────────────────
+  Future<void> connectFastest() async {
+    if (_servers.isEmpty) await fetchServers();
+    final available = _servers.where((s) => s.ovpnConfig.isNotEmpty).toList();
+    if (available.isEmpty) return;
+    final untried = available.where((s) => !_triedServers.contains(s.ip)).toList();
+    if (untried.isEmpty) {
+      _triedServers.clear();
+      await connectTo(available.first);
+    } else {
+      _triedServers.add(untried.first.ip);
+      await connectTo(untried.first);
+    }
+  }
+
+  // ─── Disconnect ───────────────────────────────────────────
+  Future<void> disconnect() async {
+    _userDisconnected = true;
+    _isSwitchingServer = false;
+    _disconnectDebounce?.cancel();
+    _connectionTimeout?.cancel();
+    _lastStage = null;
+    _triedServers.clear();
+    await _disconnectCurrent();
+    _connState = ConnectionState.disconnected;
+    _selected = null;
+    _statusMessage = '';
+    _currentSource = '';
+    _hideNotification();
+    notifyListeners();
   }
 
   // ─── Fetch Servers ────────────────────────────────────────
@@ -367,7 +424,6 @@ class VpnProvider extends ChangeNotifier {
         _loadingServers = false;
         notifyListeners();
         if (!CacheService.isCacheValid) _backgroundRefresh();
-        _enrichCountries();
         measureAllPings();
         return;
       }
@@ -377,22 +433,11 @@ class VpnProvider extends ChangeNotifier {
     _servers.clear();
     notifyListeners();
 
-    final results = await Future.wait([
-      _fetchSource2(),
-      _fetchSource3(),
-      _fetchSource4(),
-      _fetchSource1(),
-      _fetchSupabase(),
-    ]);
+    final list = await _fetchSupabase();
 
-    final all = <VpnServer>[
-      ...results[0], ...results[1], ...results[2], ...results[3], ...results[4],
-    ];
-
-    if (all.isNotEmpty) {
-      _applyServers(all);
+    if (list.isNotEmpty) {
+      _applyServers(list);
       await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
-      _enrichCountries();
       measureAllPings();
     } else {
       _serversError = 'Could not fetch servers. Pull down to retry.';
@@ -402,41 +447,12 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Enrich Countries — يجيب اسم الدولة والعلم من IP ─────
-  Future<void> _enrichCountries() async {
-    // خذ أول 30 سيرفر ما عندهم دولة
-    final toEnrich = _servers
-        .where((s) => s.countryCode == 'XX' || s.countryName == 'Unknown')
-        .take(30)
-        .toList();
-
-    for (final server in toEnrich) {
-      final info = await _lookupCountry(server.ip);
-      final idx = _servers.indexWhere((s) => s.ip == server.ip && s.protocol == server.protocol);
-      if (idx >= 0) {
-        _servers[idx] = _servers[idx].copyWith(
-          countryName: info['country'],
-          countryCode: info['code'],
-        );
-      }
-    }
-
-    // احفظ بالكاش
-    await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
-    notifyListeners();
-  }
-
   Future<void> _backgroundRefresh() async {
     try {
-      final results = await Future.wait([
-        _fetchSource2(), _fetchSource3(), _fetchSource4(),
-        _fetchSource1(), _fetchSupabase(),
-      ]);
-      final all = [...results[0], ...results[1], ...results[2], ...results[3], ...results[4]];
-      if (all.isNotEmpty) {
-        _applyServers(all);
+      final list = await _fetchSupabase();
+      if (list.isNotEmpty) {
+        _applyServers(list);
         await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
-        _enrichCountries();
         notifyListeners();
         measureAllPings();
       }
@@ -458,7 +474,7 @@ class VpnProvider extends ChangeNotifier {
     final seen = <String>{};
     for (final s in list) {
       final key = '${s.ip}_${s.protocol}';
-      if (seen.contains(key) || s.ovpnConfig.isEmpty) continue;
+      if (seen.contains(key)) continue;
       seen.add(key);
       _servers.add(s);
     }
@@ -475,172 +491,39 @@ class VpnProvider extends ChangeNotifier {
     });
   }
 
-  // ─── Connect ──────────────────────────────────────────────
-  Future<void> connectTo(VpnServer server) async {
-    if (_selected?.ip == server.ip && isConnected) return;
-    _connectionTimeout?.cancel();
-    if (isConnected || isConnecting) {
-      await _doDisconnect();
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-    if (server.ovpnConfig.isEmpty) return;
-
-    _userDisconnected = false;
-    _selected = server;
-    _connState = ConnectionState.loading;
-    _statusMessage = 'Connecting...';
-    _currentSource = _sourceLabel(server.source);
-    notifyListeners();
-
-    // Timeout — لو ما اتصل خلال 30 ثانية جرب التالي
-    _connectionTimeout = Timer(const Duration(seconds: _timeoutSeconds), () {
-      if (isConnecting) {
-        _doDisconnect();
-        _connState = ConnectionState.failed;
-        _statusMessage = 'Timeout — trying next...';
-        notifyListeners();
-        Timer(const Duration(seconds: 2), () {
-          if (_connState == ConnectionState.failed && !_userDisconnected) {
-            connectFastest();
-          }
-        });
-      }
-    });
-
+  // ─── Fetch Supabase ───────────────────────────────────────
+  Future<List<VpnServer>> _fetchSupabase() async {
     try {
-      // شغّل xray عبر Kotlin
-      final result = await _v2rayChannel.invokeMethod<bool>('connect', {
-        'config': server.ovpnConfig,
-        'name': server.countryName.isNotEmpty ? server.countryName : 'VPN',
-      });
-
-      if (result == true) {
-        // انتظر ثانية وتحقق إن xray شغّال فعلاً
-        await Future.delayed(const Duration(seconds: 2));
-        final running = await _checkIfRunning();
-
-        if (running) {
-          _onConnected(server);
-        } else {
-          _onFailed();
-        }
-      } else {
-        _onFailed();
-      }
-    } catch (e) {
-      _onFailed();
-    }
-  }
-
-  // تحقق إن xray شغّال فعلاً بتجربة اتصال بـ SOCKS port
-  Future<bool> _checkIfRunning() async {
-    try {
-      final socket = await Socket.connect(
-        '127.0.0.1', 10808,
-        timeout: const Duration(seconds: 3),
-      );
-      socket.destroy();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  void _onConnected(VpnServer server) {
-    _connState = ConnectionState.connected;
-    _statusMessage = '';
-    _connectionTimeout?.cancel();
-    _triedServers.clear();
-    if (!_trustedIps.contains(server.ip)) {
-      _trustedIps.insert(0, server.ip);
-      if (_trustedIps.length > 10) _trustedIps.removeLast();
-    }
-    _connectedAt = DateTime.now();
-    _startStats();
-    AdsService.showInterstitialAfterSuccess(1);
-    _notifChannel.invokeMethod('show', {
-      'server_name': server.countryName.isNotEmpty ? server.countryName : 'VPN',
-      'ping': server.effectivePing,
-    });
-    notifyListeners();
-  }
-
-  void _onFailed() {
-    _connectionTimeout?.cancel();
-    _connState = ConnectionState.failed;
-    _statusMessage = 'Failed — trying next...';
-    notifyListeners();
-    Timer(const Duration(seconds: 2), () {
-      if (_connState == ConnectionState.failed && !_userDisconnected) {
-        connectFastest();
-      }
-    });
-  }
-
-  String _sourceLabel(String src) {
-    switch (src) {
-      case 'source_2_hard':        return '🔒 Hard-to-Block';
-      case 'source_3_cloudflare':  return '☁️ Cloudflare';
-      case 'source_4_tested':      return '✅ Tested';
-      case 'source_1_all':         return '🌐 Multi-Protocol';
-      default:                     return '🛡️ Secure';
-    }
-  }
-
-  // ─── Connect Fastest ──────────────────────────────────────
-  Future<void> connectFastest() async {
-    if (_servers.isEmpty) await fetchServers();
-    final available = _servers.where((s) => s.ovpnConfig.isNotEmpty).toList();
-    if (available.isEmpty) return;
-    final untried = available.where((s) => !_triedServers.contains(s.ip)).toList();
-    if (untried.isEmpty) {
-      _triedServers.clear();
-      await connectTo(available.first);
-    } else {
-      _triedServers.add(untried.first.ip);
-      await connectTo(untried.first);
-    }
-  }
-
-  // ─── Disconnect ───────────────────────────────────────────
-  Future<void> disconnect() async {
-    _userDisconnected = true;
-    _connectionTimeout?.cancel();
-    _triedServers.clear();
-    await _doDisconnect();
-    _connState = ConnectionState.disconnected;
-    _selected = null;
-    _statusMessage = '';
-    _currentSource = '';
-    _stopStats();
-    _notifChannel.invokeMethod('hide');
-    notifyListeners();
-  }
-
-  Future<void> _doDisconnect() async {
-    try {
-      await _v2rayChannel.invokeMethod('disconnect');
+      final res = await Supabase.instance.client
+          .from('servers').select().eq('is_active', true)
+          .order('ping', ascending: true).limit(80);
+      final list = (res as List)
+          .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
+          .where((s) => s.ovpnConfig.isNotEmpty).toList();
+      if (list.isNotEmpty) return list;
     } catch (_) {}
-    _stopStats();
-  }
 
-  // ─── Listen for disconnect from notification button ───────
-  void listenToNativeEvents() {
-    // يستقبل "disconnect" من زر الـ notification
-    _notifChannel.setMethodCallHandler((call) async {
-      if (call.method == 'disconnect') {
-        await disconnect();
+    try {
+      const url = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
+      const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
+      final uri = Uri.parse('$url/rest/v1/servers?is_active=eq.true&order=ping.asc&limit=80');
+      final res = await http.get(uri, headers: {'apikey': key, 'Authorization': 'Bearer $key'})
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode == 200) {
+        return (jsonDecode(res.body) as List)
+            .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
+            .where((s) => s.ovpnConfig.isNotEmpty).toList();
       }
-    });
+    } catch (_) {}
+    return [];
   }
 
   // ─── Ping ─────────────────────────────────────────────────
   Future<int> _measurePing(String ip) async {
-    for (final port in [443, 80, 8080]) {
+    for (final port in [443, 1194, 80]) {
       try {
         final start = DateTime.now();
-        final s = await Socket.connect(ip, port,
-            timeout: const Duration(seconds: 3));
+        final s = await Socket.connect(ip, port, timeout: const Duration(seconds: 3));
         final ms = DateTime.now().difference(start).inMilliseconds;
         s.destroy();
         return ms;
@@ -655,9 +538,7 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
     final batch = _servers.take(20).toList();
     final pings = await Future.wait(batch.map((s) => _measurePing(s.ip)));
-    for (int i = 0; i < batch.length; i++) {
-      batch[i].realPing = pings[i];
-    }
+    for (int i = 0; i < batch.length; i++) batch[i].realPing = pings[i];
     _sortServers();
     await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
     _measuringPing = false;
@@ -694,7 +575,7 @@ class VpnProvider extends ChangeNotifier {
   void dispose() {
     _statsTimer?.cancel();
     _connectionTimeout?.cancel();
-    _statusSub?.cancel();
+    _disconnectDebounce?.cancel();
     super.dispose();
   }
 }
