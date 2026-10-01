@@ -29,9 +29,9 @@ class ServersScreen extends StatelessWidget {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text('☁️', style: TextStyle(fontSize: 14)),
+                    Text('🔒', style: TextStyle(fontSize: 14)),
                     SizedBox(width: 6),
-                    Text('Cloudflare', style: TextStyle(fontSize: 13)),
+                    Text('Proxy', style: TextStyle(fontSize: 13)),
                   ],
                 ),
               ),
@@ -60,7 +60,7 @@ class ServersScreen extends StatelessWidget {
                     emptyIcon: Icons.cloud_off_rounded,
                     emptyMessage: 'No Cloudflare servers found.',
                     headerColor: const Color(0xFF3B82F6),
-                    headerLabel: 'Anti-censorship · VLESS via Cloudflare',
+                    headerLabel: 'Anti-censorship · VLESS / Trojan',
                   ),
                   // ─── Tab 2: OpenVPN ──────────────────────────
                   _ServerList(

@@ -115,26 +115,70 @@ class VpnServer {
     'real_ping': realPing,
     'ovpn_config': ovpnConfig,
     'num_sessions': numSessions,
-    'protocol': protocol == VpnProtocol.vless ? 'vless' : 'openvpn',
+    'protocol': protocol == VpnProtocol.vless ? (ovpnConfig.startsWith('trojan://') ? 'trojan' : 'vless') : 'openvpn',
   };
+
+  // استخرج IP من trojan:// أو vless:// URI
+  static String _extractIp(String config) {
+    try {
+      final uri = Uri.parse(config);
+      return uri.host;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // استخرج country_code من الـ remark في الـ URI (fragment)
+  static String _extractCountryCode(String config, String fallback) {
+    if (fallback.isNotEmpty) return fallback;
+    try {
+      final uri = Uri.parse(config);
+      final remark = Uri.decodeComponent(uri.fragment);
+      // لو الـ remark فيه كود دولة مثل "US" أو "Canada-US"
+      final match = RegExp(r'([A-Z]{2})').firstMatch(remark.toUpperCase());
+      if (match != null) return match.group(1)!;
+    } catch (_) {}
+    return '';
+  }
 
   factory VpnServer.fromMap(Map<String, dynamic> m) {
     final proto = m['protocol'] as String? ?? 'openvpn';
     final config = m['ovpn_config'] as String? ?? '';
-    // auto-detect لو الحقل يبدأ بـ vless://
-    final isVless = proto == 'vless' ||
+
+    // auto-detect البروتوكول من الـ URI أو الحقل
+    final isProxy = proto == 'vless' ||
+        proto == 'trojan' ||
+        proto == 'vmess' ||
         config.startsWith('vless://') ||
         config.startsWith('vmess://') ||
         config.startsWith('trojan://');
 
+    // country_code — من DB أو مستخرج من الـ URI
+    String rawCode = m['country_code'] as String? ?? '';
+    if (rawCode.isEmpty) rawCode = _extractCountryCode(config, '');
+
+    // country_name — من DB أو من الـ remark
+    String rawName = m['country_name'] as String? ?? '';
+    if (rawName.isEmpty) {
+      try {
+        final uri = Uri.parse(config);
+        rawName = Uri.decodeComponent(uri.fragment).split('-').first.trim();
+      } catch (_) {}
+    }
+    if (rawName.isEmpty) rawName = 'Unknown';
+
+    // IP — من DB أو مستخرج من الـ URI
+    String ip = m['ip'] as String? ?? '';
+    if (ip.isEmpty) ip = _extractIp(config);
+
     return VpnServer(
-      countryName: cleanCountryName(m['country_name'] ?? ''),
-      countryCode: m['country_code'] ?? '',
-      ip: m['ip'] ?? '',
-      ping: (m['ping'] as num?)?.toInt() ?? 999,
+      countryName: cleanCountryName(rawName),
+      countryCode: rawCode,
+      ip: ip,
+      ping: (m['ping'] as num?)?.toInt() ?? 180,
       ovpnConfig: config,
       numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
-      protocol: isVless ? VpnProtocol.vless : VpnProtocol.openvpn,
+      protocol: isProxy ? VpnProtocol.vless : VpnProtocol.openvpn,
       realPing: (m['real_ping'] as num?)?.toInt() ?? -1,
     );
   }
@@ -429,15 +473,6 @@ class VpnProvider extends ChangeNotifier {
     }
 
     try {
-      // طلب VPN permission صراحة قبل التشغيل
-      final hasPermission = await _v2ray.requestPermission();
-      if (!hasPermission) {
-        _connState = ConnectionState.failed;
-        _statusMessage = 'VPN permission denied';
-        notifyListeners();
-        return;
-      }
-
       final parser = FlutterV2ray.parseFromURL(server.ovpnConfig);
       final config = parser.getFullConfiguration();
 
@@ -451,7 +486,7 @@ class VpnProvider extends ChangeNotifier {
     } catch (e) {
       _connState = ConnectionState.failed;
       _connectionTimeout?.cancel();
-      _statusMessage = 'VLESS connection failed';
+      _statusMessage = 'Connection failed';
       notifyListeners();
     }
   }
