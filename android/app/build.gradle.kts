@@ -7,7 +7,8 @@ plugins {
 android {
     namespace = "com.onyxvpn.onyx_vpn"
     compileSdk = 35
-    ndkVersion = "25.1.8937393"
+    // ✅ إصلاح ١: رفعنا NDK لـ 28 — يحل مشكلة shared_preferences وunity_ads وباقي المكتبات
+    ndkVersion = "28.2.13676358"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -20,14 +21,10 @@ android {
 
     defaultConfig {
         applicationId = "com.onyxvpn.onyx_vpn"
-        minSdk = 21
+        minSdk = flutter.minSdkVersion
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-
-        ndk {
-            abiFilters += listOf("arm64-v8a")
-        }
     }
 
     signingConfigs {
@@ -47,23 +44,17 @@ android {
         }
     }
 
-    // ─── مهم جداً: منع ضغط الملفات الكبيرة ──────────────────
-    // "" = ملفات بدون امتداد (xray, tun2socks)
-    androidResources {
-        noCompress += listOf("", "dat", "so", "bin")
-    }
-
-    // منع Flutter من ضغط assets
-    aaptOptions {
-        noCompress("", "dat", "so", "bin")
+    // ✅ إصلاح ٢: حل تعارض libgojni.so بين openvpn و v2ray
+    packaging {
+        jniLibs {
+            pickFirsts += setOf(
+                "**/libgojni.so",
+                "**/libc++_shared.so"
+            )
+        }
     }
 }
 
 flutter {
     source = "../.."
-}
-
-dependencies {
-    implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.core:core:1.13.1")
 }
