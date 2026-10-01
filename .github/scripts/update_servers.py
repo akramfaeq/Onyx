@@ -155,70 +155,18 @@ def upload_to_supabase(servers: list[dict]):
 # ──────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────
-CLOUDFLARE_WORKER = "https://vpn.akramfaeq523.workers.dev"
-
-def fetch_cloudflare() -> list[dict]:
-    """يجيب كونفيغات VLESS من Cloudflare Worker"""
-    try:
-        r = requests.get(f"{CLOUDFLARE_WORKER}/sub", timeout=10)
-        if r.status_code != 200:
-            print(f"[Cloudflare] فشل: {r.status_code}")
-            return []
-
-        decoded = base64.b64decode(r.text + "==").decode("utf-8")
-        configs = [l.strip() for l in decoded.splitlines()
-                   if l.strip().startswith(("vless://", "vmess://", "trojan://"))]
-
-        servers = []
-        for config in configs:
-            # استخرج الـ host من الكونفيغ
-            try:
-                after = config.split("://")[1]
-                host = after.split("@")[1].split(":")[0] if "@" in after else after.split(":")[0]
-                name = config.split("#")[1] if "#" in config else "Cloudflare"
-            except Exception:
-                continue
-
-            servers.append({
-                "country_name": "Cloudflare",
-                "country_code": "CF",
-                "ip":           host,
-                "ping":         50,  # Cloudflare سريع دايماً
-                "ovpn_config":  config,
-                "num_sessions": 0,
-                "protocol":     "vless",
-                "is_active":    True,
-                "source":       "cloudflare",
-            })
-
-        print(f"[Cloudflare] جبنا {len(servers)} كونفيغ")
-        return servers
-    except Exception as e:
-        print(f"[Cloudflare] خطأ: {e}")
-        return []
-
-
 def main():
     print("=" * 50)
     print("بدأ تحديث السيرفرات")
     print("=" * 50)
 
-    # المصدر 1 — VPN Gate (OpenVPN)
     servers = fetch_vpngate()
-
-    # المصدر 2 — Cloudflare Worker (VLESS)
-    cf_servers = fetch_cloudflare()
-    servers += cf_servers
 
     if not servers:
         print("❌ ما لقينا أي سيرفر")
         return
 
-    # OpenVPN بس يمر بالفلتر، Cloudflare يضاف مباشرة
-    openvpn = [s for s in servers if s.get("protocol") == "openvpn"]
-    cloudflare = [s for s in servers if s.get("protocol") != "openvpn"]
-
-    final = filter_and_sort(openvpn) + cloudflare
+    final = filter_and_sort(servers)
 
     if not final:
         print("❌ ما في سيرفرات بعد الفلتر")
@@ -228,7 +176,6 @@ def main():
 
     print("=" * 50)
     print(f"✅ خلصنا — {len(final)} سيرفر جاهز في Supabase")
-    print(f"   OpenVPN: {len(openvpn)} | Cloudflare: {len(cloudflare)}")
     print("=" * 50)
 
 

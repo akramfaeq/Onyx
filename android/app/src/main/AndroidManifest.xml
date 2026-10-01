@@ -32,19 +32,9 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- OpenVPN Service -->
+        <!-- Service مالة المكتبة — لازم يبقى، نعطّل إشعارها الخاص -->
         <service
             android:name="de.blinkt.openvpn.core.OpenVPNService"
-            android:exported="false"
-            android:permission="android.permission.BIND_VPN_SERVICE">
-            <intent-filter>
-                <action android:name="android.net.VpnService"/>
-            </intent-filter>
-        </service>
-
-        <!-- V2Ray / VLESS Service — منفصل تماماً عن OpenVPN -->
-        <service
-            android:name="com.v2ray.ang.service.V2RayVpnService"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
