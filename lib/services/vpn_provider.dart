@@ -275,12 +275,19 @@ class VpnProvider extends ChangeNotifier {
 
   // ─── Init V2Ray ───────────────────────────────────────────
   void _initV2Ray() {
-    _v2ray = FlutterV2ray(onStatusChanged: _onV2RayStatus);
-
-    _v2ray.initializeV2Ray(
-      notificationIconResourceType: 'mipmap',
-      notificationIconResourceName: 'ic_launcher',
-    ).then((_) => _v2rayReady = true).catchError((_) {});
+    try {
+      _v2ray = FlutterV2ray(onStatusChanged: _onV2RayStatus);
+      _v2ray.initializeV2Ray(
+        notificationIconResourceType: 'mipmap',
+        notificationIconResourceName: 'ic_launcher',
+      ).then((_) {
+        _v2rayReady = true;
+      }).catchError((e) {
+        _v2rayReady = false;
+      });
+    } catch (e) {
+      _v2rayReady = false;
+    }
   }
 
   void _onV2RayStatus(V2RayStatus status) {
@@ -410,20 +417,43 @@ class VpnProvider extends ChangeNotifier {
   // ─── V2Ray / VLESS connect ────────────────────────────────
   Future<void> _connectV2Ray(VpnServer server) async {
     if (!_v2rayReady) {
-      _connState = ConnectionState.failed;
-      _statusMessage = 'V2Ray not ready';
-      notifyListeners();
-      return;
+      // حاول تعيد init مرة ثانية
+      _initV2Ray();
+      await Future.delayed(const Duration(seconds: 1));
+      if (!_v2rayReady) {
+        _connState = ConnectionState.failed;
+        _statusMessage = 'V2Ray not ready';
+        notifyListeners();
+        return;
+      }
     }
 
-    final parser = FlutterV2ray.parseFromURL(server.ovpnConfig);
-    await _v2ray.startV2Ray(
-      remark: server.countryName,
-      config: parser.getFullConfiguration(),
-      blockedApps: null,
-      bypassSubnets: null,
-      proxyOnly: false,
-    );
+    try {
+      // طلب VPN permission صراحة قبل التشغيل
+      final hasPermission = await _v2ray.requestPermission();
+      if (!hasPermission) {
+        _connState = ConnectionState.failed;
+        _statusMessage = 'VPN permission denied';
+        notifyListeners();
+        return;
+      }
+
+      final parser = FlutterV2ray.parseFromURL(server.ovpnConfig);
+      final config = parser.getFullConfiguration();
+
+      await _v2ray.startV2Ray(
+        remark: server.countryName,
+        config: config,
+        blockedApps: null,
+        bypassSubnets: null,
+        proxyOnly: false,
+      );
+    } catch (e) {
+      _connState = ConnectionState.failed;
+      _connectionTimeout?.cancel();
+      _statusMessage = 'VLESS connection failed';
+      notifyListeners();
+    }
   }
 
   // ─── Disconnect engine ────────────────────────────────────
@@ -591,8 +621,7 @@ class VpnProvider extends ChangeNotifier {
     for (final m in cached) {
       final s = VpnServer.fromMap(m);
       if (s.ovpnConfig.isEmpty) continue;
-      // OpenVPN فقط يفلتر بالـ ping، VLESS يضاف دائماً
-      if (!s.isVless && s.ping > 300) continue;
+      // ✅ لا نحذف أي سيرفر بناءً على ping — الكل يظهر
       _servers.add(s);
     }
     _sortServers();
