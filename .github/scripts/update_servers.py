@@ -63,10 +63,8 @@ def fetch_vpngate() -> list[dict]:
                         "ovpn_config":  config,
                         "num_sessions": sessions,
                         "protocol":     "openvpn",
-                        # ✅ إصلاح ١: is_active دائماً True، ما نعتمد على TCP test
                         "is_active":    True,
-                        # ✅ إصلاح ٢: source = supabase
-                        "source":       "supabase",
+                        "source":       "vpngate",
                     })
                     if len(servers) >= 200:
                         break
@@ -78,13 +76,13 @@ def fetch_vpngate() -> list[dict]:
                 return servers
 
         except Exception as e:
-            print(f"[VPNGate] خطأ: {e}")
+            print(f"[VPNGate] خطأ تفصيلي: {type(e).__name__}: {e}")
 
     return []
 
 
 # ──────────────────────────────────────────────
-# فلتر وترتيب — نعتمد على ping VPNGate مباشرة
+# فلتر وترتيب
 # ──────────────────────────────────────────────
 def filter_and_sort(servers: list[dict]) -> list[dict]:
     print(f"[Filter] نفلتر {len(servers)} سيرفر...")
@@ -103,14 +101,12 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
 
     print(f"[Filter] {len(filtered)} سيرفر بعد إزالة المكررين")
 
-    # ✅ إصلاح ٣: رتّب الأقوى أولاً (ping + ازدحام)
     def score(s):
         congestion = min(s.get("num_sessions", 0) // 10, 200)
         return s["ping"] + congestion
 
     filtered.sort(key=score)
 
-    # حدّ لكل دولة — أفضل 3 لكل دولة
     country_count: dict[str, int] = {}
     result = []
     for s in filtered:
@@ -132,15 +128,12 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
 def upload_to_supabase(servers: list[dict]):
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # احذف كل السيرفرات القديمة نظيف
     client.table("servers").delete().neq("ip", "").execute()
     print("[Supabase] حذفنا السيرفرات القديمة")
 
-    # تأكد كل سيرفر عنده is_active = True
     for s in servers:
         s["is_active"] = True
 
-    # ارفع الجديدة كـ insert نظيف
     batch_size = 20
     uploaded = 0
     for i in range(0, len(servers), batch_size):
@@ -163,7 +156,7 @@ def main():
     servers = fetch_vpngate()
 
     if not servers:
-        print("❌ ما لقينا أي سيرفر")
+        print("❌ ما لقينا أي سيرفر من VPNGate")
         return
 
     final = filter_and_sort(servers)
