@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- الأذونات -->
+    <!-- الأذونات (Permissions) -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
@@ -12,7 +12,6 @@
         android:label="OnyxVPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -29,14 +28,13 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
-        <!-- V2Ray/Xray VPN Service — الجديد -->
+        <!-- OpenVPN Service -->
         <service
-            android:name=".V2RayVpnService"
+            android:name="de.blinkt.openvpn.core.OpenVPNService"
             android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
@@ -44,11 +42,15 @@
             </intent-filter>
         </service>
 
-        <!-- Notification Service -->
+        <!-- V2Ray / VLESS Service — منفصل تماماً عن OpenVPN -->
         <service
-            android:name=".VpnNotificationService"
+            android:name="com.v2ray.ang.service.V2RayVpnService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice"/>
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService"/>
+            </intent-filter>
+        </service>
 
     </application>
 

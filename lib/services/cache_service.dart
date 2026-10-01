@@ -26,11 +26,7 @@ class CacheService {
     if (raw == null) return null;
     try {
       final list = jsonDecode(raw as String) as List;
-      // ✅ whereType بدل cast — يتجاهل أي عنصر بصيغة خاطئة بدل ما يكرش
-      return list
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
+      return list.cast<Map<String, dynamic>>();
     } catch (_) {
       return null;
     }

@@ -4,17 +4,9 @@ import '../services/vpn_provider.dart';
 import '../services/ads_service.dart';
 import 'servers_screen.dart';
 import 'info_screen.dart';
-import 'debug_screen.dart';
 
-class HomeScreen extends StatefulWidget {
+class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
-
-  @override
-  State<HomeScreen> createState() => _HomeScreenState();
-}
-
-class _HomeScreenState extends State<HomeScreen> {
-  int _tapCount = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -40,23 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ─── Top Bar ──────────────────────────────────────────────────
-class _TopBar extends StatefulWidget {
-  @override
-  State<_TopBar> createState() => _TopBarState();
-}
-
-class _TopBarState extends State<_TopBar> {
-  int _tapCount = 0;
-
-  void _onTitleTap() {
-    _tapCount++;
-    if (_tapCount >= 5) {
-      _tapCount = 0;
-      Navigator.push(context,
-          MaterialPageRoute(builder: (_) => const DebugScreen()));
-    }
-  }
-
+class _TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -64,28 +40,25 @@ class _TopBarState extends State<_TopBar> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          GestureDetector(
-            onTap: _onTitleTap,
-            child: RichText(
-              text: const TextSpan(children: [
-                TextSpan(
-                  text: 'Onyx',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-                TextSpan(
-                  text: 'VPN',
-                  style: TextStyle(
-                      color: Color(0xFF7B5CF0),
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-              ]),
-            ),
+          RichText(
+            text: const TextSpan(children: [
+              TextSpan(
+                text: 'Onyx',
+                style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+              TextSpan(
+                text: 'VPN',
+                style: TextStyle(
+                    color: Color(0xFF7B5CF0),
+                    fontSize: 24,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -0.5),
+              ),
+            ]),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
@@ -575,11 +548,29 @@ class _ServerTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(server.countryName,
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500)),
+                  Row(children: [
+                    Text(server.countryName,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500)),
+                    if (server.isVless) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF3B82F6).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('VLESS',
+                            style: TextStyle(
+                                color: Color(0xFF3B82F6),
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ],
+                  ]),
                   Text('${server.effectivePing > 0 && server.effectivePing < 9999 ? server.effectivePing : server.ping} ms · ${server.pingLabel}',
                       style: const TextStyle(
                           color: Color(0xFF6B7280), fontSize: 11)),

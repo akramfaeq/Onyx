@@ -1,213 +1,236 @@
 """
-update_servers.py — يجيب سيرفرات V2Ray من 4 مصادر ويحفظهم في Supabase
-مع معرفة الدولة من الـ IP تلقائياً
+update_servers.py
+يجيب سيرفرات VPN من VPNGate، يفلترهم، يحفظهم في Supabase.
 """
 
-import os
+import os 
+import csv
 import base64
-import json
+import time
 import requests
+from io import StringIO
 from supabase import create_client
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
-MAX_SERVERS = 120
+MAX_PING_MS     = 300
+MAX_SERVERS     = 80
+MAX_PER_COUNTRY = 3
 
-# ─── المصادر ──────────────────────────────────────────────────
-SOURCE_1_URLS = [
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/vless.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/vmess.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/trojan.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/shadowsocks.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt",
-]
-SOURCE_2_URLS = [
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/hysteria2.txt",
-    "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/Splitted-By-Protocol/reality.txt",
-]
-SOURCE_3_URLS = [
-    "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub1.txt",
-    "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Sub2.txt",
-]
-SOURCE_4_URLS = [
-    "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/mix",
-    "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/sub/hysteria2",
-]
 
-# ─── IP Cache ─────────────────────────────────────────────────
-_ip_cache = {}
-
-def lookup_country(ip: str) -> tuple[str, str]:
-    """يجيب اسم الدولة ورمزها من الـ IP"""
-    if ip in _ip_cache:
-        return _ip_cache[ip]
-    try:
-        r = requests.get(
-            f"http://ip-api.com/json/{ip}?fields=country,countryCode",
-            timeout=5
-        )
-        if r.status_code == 200:
-            data = r.json()
-            country = data.get("country", "Unknown")
-            code    = data.get("countryCode", "XX")
-            _ip_cache[ip] = (country, code)
-            return country, code
-    except Exception:
-        pass
-    return "Unknown", "XX"
-
-# ─── Helpers ──────────────────────────────────────────────────
-def fetch_text(url: str) -> str:
-    try:
-        r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            return r.text
-    except Exception as e:
-        print(f"  [خطأ] {url}: {e}")
-    return ""
-
-def decode_if_base64(text: str) -> str:
-    try:
-        decoded = base64.b64decode(text + "==").decode("utf-8")
-        if any(p in decoded for p in ["vless://","vmess://","trojan://","ss://","hysteria2://","hy2://"]):
-            return decoded
-    except Exception:
-        pass
-    return text
-
-def parse_configs(raw: str) -> list:
-    text = decode_if_base64(raw.strip())
-    prefixes = ("vless://","vmess://","trojan://","ss://","hysteria2://","hy2://")
-    return [l.strip() for l in text.splitlines() if any(l.strip().startswith(p) for p in prefixes)]
-
-def detect_protocol(config: str) -> str:
-    if config.startswith("vless://"):
-        return "vless-reality" if ("reality" in config.lower() or "xtls" in config.lower()) else "vless"
-    if config.startswith("vmess://"):   return "vmess"
-    if config.startswith("trojan://"):  return "trojan"
-    if config.startswith("ss://"):      return "shadowsocks"
-    if config.startswith("hysteria2://") or config.startswith("hy2://"): return "hysteria2"
-    return "unknown"
-
-def is_hard_to_block(protocol: str) -> bool:
-    return protocol in ("hysteria2", "vless-reality", "vless")
-
-def extract_host(config: str) -> str:
-    try:
-        after = config.split("://", 1)[1]
-        if config.startswith("vmess://"):
-            data = json.loads(base64.b64decode(after + "==").decode("utf-8"))
-            return data.get("add", "")
-        at_part = after.split("@")[-1] if "@" in after else after
-        return at_part.split(":")[0].split("?")[0].split("#")[0]
-    except Exception:
-        return ""
-
-def config_to_row(config: str, source_name: str) -> dict | None:
-    protocol = detect_protocol(config)
-    if protocol == "unknown":
-        return None
-    host = extract_host(config)
-    if not host:
-        return None
-
-    # جيب الدولة من الـ IP
-    country_name, country_code = lookup_country(host)
-
-    return {
-        "ip":               host,
-        "country_name":     country_name,
-        "country_code":     country_code,
-        "ping":             80 if is_hard_to_block(protocol) else 180,
-        "ovpn_config":      config,
-        "num_sessions":     0,
-        "protocol":         protocol,
-        "source":           source_name,
-        "is_active":        True,
-        "is_hard_to_block": is_hard_to_block(protocol),
-    }
-
-# ─── المصادر ──────────────────────────────────────────────────
-def fetch_source(urls: list, source_name: str, filter_protocols: list = None, limit: int = 40) -> list:
-    rows = []
+# ──────────────────────────────────────────────
+# جيب من VPNGate
+# ──────────────────────────────────────────────
+def fetch_vpngate() -> list[dict]:
+    urls = [
+        "https://www.vpngate.net/api/iphone/",
+        "https://vpngate.net/api/iphone/",
+    ]
     for url in urls:
-        raw = fetch_text(url)
-        if not raw:
+        try:
+            r = requests.get(url, timeout=15,
+                             headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+
+            lines = r.text.splitlines()
+            csv_text = "\n".join(lines[1:])
+            reader = csv.reader(StringIO(csv_text))
+            headers = next(reader, None)
+            if not headers:
+                continue
+
+            servers = []
+            for row in reader:
+                if len(row) <= 14 or not row[14]:
+                    continue
+                try:
+                    ping = int(row[3]) if row[3].isdigit() else 999
+                    if ping > MAX_PING_MS:
+                        continue
+                    config = base64.b64decode(row[14]).decode("utf-8")
+                    country_name = row[5].split("(")[0].strip()
+                    country_code = row[6].upper()[:2]
+                    if not country_name or not country_code:
+                        continue
+                    sessions = int(row[7]) if row[7].isdigit() else 0
+                    servers.append({
+                        "country_name": country_name,
+                        "country_code": country_code,
+                        "ip":           row[1],
+                        "ping":         ping,
+                        "ovpn_config":  config,
+                        "num_sessions": sessions,
+                        "protocol":     "openvpn",
+                        # ✅ إصلاح ١: is_active دائماً True، ما نعتمد على TCP test
+                        "is_active":    True,
+                        # ✅ إصلاح ٢: source = supabase
+                        "source":       "supabase",
+                    })
+                    if len(servers) >= 200:
+                        break
+                except Exception:
+                    continue
+
+            if servers:
+                print(f"[VPNGate] جبنا {len(servers)} سيرفر")
+                return servers
+
+        except Exception as e:
+            print(f"[VPNGate] خطأ: {e}")
+
+    return []
+
+
+# ──────────────────────────────────────────────
+# فلتر وترتيب — نعتمد على ping VPNGate مباشرة
+# ──────────────────────────────────────────────
+def filter_and_sort(servers: list[dict]) -> list[dict]:
+    print(f"[Filter] نفلتر {len(servers)} سيرفر...")
+
+    seen_ips = set()
+    filtered = []
+
+    for s in servers:
+        ip = s["ip"]
+        if ip in seen_ips:
             continue
-        configs = parse_configs(raw)
-        if filter_protocols:
-            configs = [c for c in configs if detect_protocol(c) in filter_protocols]
-        configs = configs[:limit]
-        print(f"  ← {len(configs)} كونفيغ من {url.split('/')[-1]}")
-        for c in configs:
-            row = config_to_row(c, source_name)
-            if row:
-                rows.append(row)
-    return rows
+        seen_ips.add(ip)
+        if not s.get("ovpn_config"):
+            continue
+        filtered.append(s)
 
-# ─── Merge ────────────────────────────────────────────────────
-def merge_and_filter(all_rows: list) -> list:
-    seen = set()
-    unique = []
-    for row in all_rows:
-        key = f"{row['ip']}_{row['protocol']}"
-        if key not in seen:
-            seen.add(key)
-            unique.append(row)
+    print(f"[Filter] {len(filtered)} سيرفر بعد إزالة المكررين")
 
-    unique.sort(key=lambda r: (0 if r.get("is_hard_to_block") else 1, r["ping"]))
-    return unique[:MAX_SERVERS]
+    # ✅ إصلاح ٣: رتّب الأقوى أولاً (ping + ازدحام)
+    def score(s):
+        congestion = min(s.get("num_sessions", 0) // 10, 200)
+        return s["ping"] + congestion
 
-# ─── Upload ───────────────────────────────────────────────────
-def upload_to_supabase(servers: list):
+    filtered.sort(key=score)
+
+    # حدّ لكل دولة — أفضل 3 لكل دولة
+    country_count: dict[str, int] = {}
+    result = []
+    for s in filtered:
+        cc = s["country_code"]
+        count = country_count.get(cc, 0)
+        if count < MAX_PER_COUNTRY:
+            result.append(s)
+            country_count[cc] = count + 1
+        if len(result) >= MAX_SERVERS:
+            break
+
+    print(f"[Filter] {len(result)} سيرفر جاهز للرفع")
+    return result
+
+
+# ──────────────────────────────────────────────
+# ارفع على Supabase
+# ──────────────────────────────────────────────
+def upload_to_supabase(servers: list[dict]):
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    client.table("servers").delete().neq("ip", "").execute()
-    print(f"\n[Supabase] حذفنا القديمة، نرفع {len(servers)} سيرفر...")
-    for i in range(0, len(servers), 20):
-        client.table("servers").insert(servers[i:i+20]).execute()
-        print(f"  رفعنا {min(i+20, len(servers))}/{len(servers)}")
-    print(f"[Supabase] ✅ اكتمل")
 
-# ─── Main ─────────────────────────────────────────────────────
+    # احذف كل السيرفرات القديمة نظيف
+    client.table("servers").delete().neq("ip", "").execute()
+    print("[Supabase] حذفنا السيرفرات القديمة")
+
+    # تأكد كل سيرفر عنده is_active = True
+    for s in servers:
+        s["is_active"] = True
+
+    # ارفع الجديدة كـ insert نظيف
+    batch_size = 20
+    uploaded = 0
+    for i in range(0, len(servers), batch_size):
+        batch = servers[i:i + batch_size]
+        client.table("servers").insert(batch).execute()
+        uploaded += len(batch)
+        print(f"[Supabase] رفعنا {uploaded}/{len(servers)}")
+
+    print(f"[Supabase] ✅ اكتمل — {len(servers)} سيرفر")
+
+
+# ──────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────
+CLOUDFLARE_WORKER = "https://vpn.akramfaeq523.workers.dev"
+
+def fetch_cloudflare() -> list[dict]:
+    """يجيب كونفيغات VLESS من Cloudflare Worker"""
+    try:
+        r = requests.get(f"{CLOUDFLARE_WORKER}/sub", timeout=10)
+        if r.status_code != 200:
+            print(f"[Cloudflare] فشل: {r.status_code}")
+            return []
+
+        decoded = base64.b64decode(r.text + "==").decode("utf-8")
+        configs = [l.strip() for l in decoded.splitlines()
+                   if l.strip().startswith(("vless://", "vmess://", "trojan://"))]
+
+        servers = []
+        for config in configs:
+            # استخرج الـ host من الكونفيغ
+            try:
+                after = config.split("://")[1]
+                host = after.split("@")[1].split(":")[0] if "@" in after else after.split(":")[0]
+                name = config.split("#")[1] if "#" in config else "Cloudflare"
+            except Exception:
+                continue
+
+            servers.append({
+                "country_name": "Cloudflare",
+                "country_code": "CF",
+                "ip":           host,
+                "ping":         50,  # Cloudflare سريع دايماً
+                "ovpn_config":  config,
+                "num_sessions": 0,
+                "protocol":     "vless",
+                "is_active":    True,
+                "source":       "cloudflare",
+            })
+
+        print(f"[Cloudflare] جبنا {len(servers)} كونفيغ")
+        return servers
+    except Exception as e:
+        print(f"[Cloudflare] خطأ: {e}")
+        return []
+
+
 def main():
     print("=" * 50)
-    print("بدأ تحديث السيرفرات — 4 مصادر")
+    print("بدأ تحديث السيرفرات")
     print("=" * 50)
 
-    all_rows = []
+    # المصدر 1 — VPN Gate (OpenVPN)
+    servers = fetch_vpngate()
 
-    print("\n[المصدر 1] 0xRadikal — كل البروتوكولات")
-    all_rows += fetch_source(SOURCE_1_URLS, "source_1_all")
+    # المصدر 2 — Cloudflare Worker (VLESS)
+    cf_servers = fetch_cloudflare()
+    servers += cf_servers
 
-    print("\n[المصدر 2] 0xRadikal — Hysteria2 + REALITY فقط")
-    all_rows += fetch_source(SOURCE_2_URLS, "source_2_hard", ["hysteria2", "vless-reality"])
-
-    print("\n[المصدر 3] barry-far — Cloudflare CDN")
-    all_rows += fetch_source(SOURCE_3_URLS, "source_3_cloudflare", ["vless", "trojan"], limit=30)
-
-    print("\n[المصدر 4] morpheusadam — مختبر فعلياً")
-    all_rows += fetch_source(SOURCE_4_URLS, "source_4_tested")
-
-    if not all_rows:
+    if not servers:
         print("❌ ما لقينا أي سيرفر")
         return
 
-    final = merge_and_filter(all_rows)
-    print(f"\n[دمج] النهائي: {len(final)} سيرفر")
+    # OpenVPN بس يمر بالفلتر، Cloudflare يضاف مباشرة
+    openvpn = [s for s in servers if s.get("protocol") == "openvpn"]
+    cloudflare = [s for s in servers if s.get("protocol") != "openvpn"]
 
-    # إحصاء الدول
-    from collections import Counter
-    countries = Counter(r["country_name"] for r in final if r["country_name"] != "Unknown")
-    print("أكثر الدول:")
-    for country, count in countries.most_common(10):
-        print(f"  {country}: {count}")
+    final = filter_and_sort(openvpn) + cloudflare
+
+    if not final:
+        print("❌ ما في سيرفرات بعد الفلتر")
+        return
 
     upload_to_supabase(final)
 
     print("=" * 50)
-    print(f"✅ خلصنا — {len(final)} سيرفر بـ Supabase")
+    print(f"✅ خلصنا — {len(final)} سيرفر جاهز في Supabase")
+    print(f"   OpenVPN: {len(openvpn)} | Cloudflare: {len(cloudflare)}")
     print("=" * 50)
+
 
 if __name__ == "__main__":
     main()
