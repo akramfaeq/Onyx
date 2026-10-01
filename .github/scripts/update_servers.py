@@ -1,6 +1,7 @@
 """
 update_servers.py
 يجيب سيرفرات VPN من VPNGate، يختبرهم، يحفظهم في Supabase.
+السيرفرات على port 443 تجي أولاً (تشتغل بإيران والدول المحظورة)
 """
 
 import os
@@ -18,8 +19,8 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 MAX_PING_MS     = 300
 MAX_SERVERS     = 80
 MAX_PER_COUNTRY = 3
-TCP_TIMEOUT     = 5    # ثواني لكل اختبار
-MAX_WORKERS     = 30   # اختبارات متوازية
+TCP_TIMEOUT     = 5
+MAX_WORKERS     = 30
 
 
 # ──────────────────────────────────────────────
@@ -59,8 +60,7 @@ def fetch_vpngate() -> list[dict]:
                         continue
                     sessions = int(row[7]) if row[7].isdigit() else 0
 
-                    # استخرج IP والـ port من الكونفيغ
-                    ip = row[1]
+                    # استخرج الـ port من الكونفيغ
                     port = 1194
                     for line in config.splitlines():
                         if line.startswith("remote "):
@@ -72,7 +72,7 @@ def fetch_vpngate() -> list[dict]:
                     servers.append({
                         "country_name": country_name,
                         "country_code": country_code,
-                        "ip":           ip,
+                        "ip":           row[1],
                         "port":         port,
                         "ping":         ping,
                         "ovpn_config":  config,
@@ -80,6 +80,7 @@ def fetch_vpngate() -> list[dict]:
                         "protocol":     "openvpn",
                         "is_active":    True,
                         "source":       "vpngate",
+                        "is_hard_to_block": port == 443,  # علّم سيرفرات 443
                     })
                     if len(servers) >= 300:
                         break
@@ -88,6 +89,8 @@ def fetch_vpngate() -> list[dict]:
 
             if servers:
                 print(f"[VPNGate] جبنا {len(servers)} سيرفر")
+                port443 = [s for s in servers if s["port"] == 443]
+                print(f"[VPNGate] منهم {len(port443)} على port 443")
                 return servers
 
         except Exception as e:
@@ -97,15 +100,13 @@ def fetch_vpngate() -> list[dict]:
 
 
 # ──────────────────────────────────────────────
-# TCP test — يتحقق السيرفر حي
+# TCP test
 # ──────────────────────────────────────────────
 def tcp_test(server: dict) -> bool:
-    ip   = server["ip"]
-    port = server.get("port", 1194)
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(TCP_TIMEOUT)
-        result = sock.connect_ex((ip, port))
+        result = sock.connect_ex((server["ip"], server["port"]))
         sock.close()
         return result == 0
     except Exception:
@@ -113,7 +114,7 @@ def tcp_test(server: dict) -> bool:
 
 
 def test_all(servers: list[dict]) -> list[dict]:
-    print(f"[Test] نختبر {len(servers)} سيرفر بـ {MAX_WORKERS} worker متوازي...")
+    print(f"[Test] نختبر {len(servers)} سيرفر...")
     alive = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(tcp_test, s): s for s in servers}
@@ -121,28 +122,27 @@ def test_all(servers: list[dict]) -> list[dict]:
             s = futures[future]
             if future.result():
                 alive.append(s)
-    print(f"[Test] {len(alive)} سيرفر حي من أصل {len(servers)}")
+    print(f"[Test] {len(alive)} سيرفر حي")
     return alive
 
 
 # ──────────────────────────────────────────────
-# فلتر وترتيب
+# فلتر وترتيب — port 443 أولاً
 # ──────────────────────────────────────────────
 def filter_and_sort(servers: list[dict]) -> list[dict]:
     seen_ips = set()
     filtered = []
     for s in servers:
-        ip = s["ip"]
-        if ip in seen_ips:
+        if s["ip"] in seen_ips or not s.get("ovpn_config"):
             continue
-        seen_ips.add(ip)
-        if not s.get("ovpn_config"):
-            continue
+        seen_ips.add(s["ip"])
         filtered.append(s)
 
     def score(s):
+        # port 443 يأخذ أولوية — ping وهمي أقل
+        port_bonus = -100 if s["port"] == 443 else 0
         congestion = min(s.get("num_sessions", 0) // 10, 200)
-        return s["ping"] + congestion
+        return s["ping"] + congestion + port_bonus
 
     filtered.sort(key=score)
 
@@ -157,7 +157,8 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
         if len(result) >= MAX_SERVERS:
             break
 
-    print(f"[Filter] {len(result)} سيرفر بعد الفلتر")
+    port443 = [s for s in result if s["port"] == 443]
+    print(f"[Filter] {len(result)} سيرفر — منهم {len(port443)} على port 443")
     return result
 
 
@@ -172,7 +173,7 @@ def upload_to_supabase(servers: list[dict]):
 
     for s in servers:
         s["is_active"] = True
-        s.pop("port", None)  # port مو موجود بالجدول
+        s.pop("port", None)
 
     batch_size = 20
     uploaded = 0
@@ -193,26 +194,26 @@ def main():
     print("بدأ تحديث السيرفرات")
     print("=" * 50)
 
-    # ① جيب السيرفرات
     servers = fetch_vpngate()
     if not servers:
-        print("❌ ما لقينا أي سيرفر من VPNGate")
+        print("❌ ما لقينا أي سيرفر")
         return
 
-    # ② فلتر المكررين ورتّب
     filtered = filter_and_sort(servers)
-
-    # ③ اختبر الحيين فقط
     alive = test_all(filtered)
+
     if not alive:
         print("❌ كل السيرفرات ميتة!")
         return
 
-    # ④ ارفع
+    # رتّب مرة ثانية بعد الفلتر — port 443 أولاً
+    alive.sort(key=lambda s: (0 if s.get("is_hard_to_block") else 1, s["ping"]))
+
     upload_to_supabase(alive)
 
+    port443 = [s for s in alive if s.get("is_hard_to_block")]
     print("=" * 50)
-    print(f"✅ خلصنا — {len(alive)} سيرفر شغال جاهز في Supabase")
+    print(f"✅ {len(alive)} سيرفر شغال — {len(port443)} منهم port 443")
     print("=" * 50)
 
 
