@@ -1,12 +1,13 @@
 """
 update_servers.py
-يجيب سيرفرات VPN من VPNGate، يفلترهم، يحفظهم في Supabase.
+يجيب سيرفرات VPN من VPNGate، يختبرهم، يحفظهم في Supabase.
 """
 
-import os 
+import os
 import csv
 import base64
-import time
+import socket
+import concurrent.futures
 import requests
 from io import StringIO
 from supabase import create_client
@@ -17,6 +18,8 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 MAX_PING_MS     = 300
 MAX_SERVERS     = 80
 MAX_PER_COUNTRY = 3
+TCP_TIMEOUT     = 5    # ثواني لكل اختبار
+MAX_WORKERS     = 30   # اختبارات متوازية
 
 
 # ──────────────────────────────────────────────
@@ -55,10 +58,22 @@ def fetch_vpngate() -> list[dict]:
                     if not country_name or not country_code:
                         continue
                     sessions = int(row[7]) if row[7].isdigit() else 0
+
+                    # استخرج IP والـ port من الكونفيغ
+                    ip = row[1]
+                    port = 1194
+                    for line in config.splitlines():
+                        if line.startswith("remote "):
+                            parts = line.split()
+                            if len(parts) >= 3 and parts[2].isdigit():
+                                port = int(parts[2])
+                            break
+
                     servers.append({
                         "country_name": country_name,
                         "country_code": country_code,
-                        "ip":           row[1],
+                        "ip":           ip,
+                        "port":         port,
                         "ping":         ping,
                         "ovpn_config":  config,
                         "num_sessions": sessions,
@@ -66,7 +81,7 @@ def fetch_vpngate() -> list[dict]:
                         "is_active":    True,
                         "source":       "vpngate",
                     })
-                    if len(servers) >= 200:
+                    if len(servers) >= 300:
                         break
                 except Exception:
                     continue
@@ -76,20 +91,46 @@ def fetch_vpngate() -> list[dict]:
                 return servers
 
         except Exception as e:
-            print(f"[VPNGate] خطأ تفصيلي: {type(e).__name__}: {e}")
+            print(f"[VPNGate] خطأ: {type(e).__name__}: {e}")
 
     return []
+
+
+# ──────────────────────────────────────────────
+# TCP test — يتحقق السيرفر حي
+# ──────────────────────────────────────────────
+def tcp_test(server: dict) -> bool:
+    ip   = server["ip"]
+    port = server.get("port", 1194)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(TCP_TIMEOUT)
+        result = sock.connect_ex((ip, port))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
+
+def test_all(servers: list[dict]) -> list[dict]:
+    print(f"[Test] نختبر {len(servers)} سيرفر بـ {MAX_WORKERS} worker متوازي...")
+    alive = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = {ex.submit(tcp_test, s): s for s in servers}
+        for future in concurrent.futures.as_completed(futures):
+            s = futures[future]
+            if future.result():
+                alive.append(s)
+    print(f"[Test] {len(alive)} سيرفر حي من أصل {len(servers)}")
+    return alive
 
 
 # ──────────────────────────────────────────────
 # فلتر وترتيب
 # ──────────────────────────────────────────────
 def filter_and_sort(servers: list[dict]) -> list[dict]:
-    print(f"[Filter] نفلتر {len(servers)} سيرفر...")
-
     seen_ips = set()
     filtered = []
-
     for s in servers:
         ip = s["ip"]
         if ip in seen_ips:
@@ -98,8 +139,6 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
         if not s.get("ovpn_config"):
             continue
         filtered.append(s)
-
-    print(f"[Filter] {len(filtered)} سيرفر بعد إزالة المكررين")
 
     def score(s):
         congestion = min(s.get("num_sessions", 0) // 10, 200)
@@ -118,7 +157,7 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
         if len(result) >= MAX_SERVERS:
             break
 
-    print(f"[Filter] {len(result)} سيرفر جاهز للرفع")
+    print(f"[Filter] {len(result)} سيرفر بعد الفلتر")
     return result
 
 
@@ -133,6 +172,7 @@ def upload_to_supabase(servers: list[dict]):
 
     for s in servers:
         s["is_active"] = True
+        s.pop("port", None)  # port مو موجود بالجدول
 
     batch_size = 20
     uploaded = 0
@@ -153,22 +193,26 @@ def main():
     print("بدأ تحديث السيرفرات")
     print("=" * 50)
 
+    # ① جيب السيرفرات
     servers = fetch_vpngate()
-
     if not servers:
         print("❌ ما لقينا أي سيرفر من VPNGate")
         return
 
-    final = filter_and_sort(servers)
+    # ② فلتر المكررين ورتّب
+    filtered = filter_and_sort(servers)
 
-    if not final:
-        print("❌ ما في سيرفرات بعد الفلتر")
+    # ③ اختبر الحيين فقط
+    alive = test_all(filtered)
+    if not alive:
+        print("❌ كل السيرفرات ميتة!")
         return
 
-    upload_to_supabase(final)
+    # ④ ارفع
+    upload_to_supabase(alive)
 
     print("=" * 50)
-    print(f"✅ خلصنا — {len(final)} سيرفر جاهز في Supabase")
+    print(f"✅ خلصنا — {len(alive)} سيرفر شغال جاهز في Supabase")
     print("=" * 50)
 
 
