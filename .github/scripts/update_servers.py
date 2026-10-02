@@ -214,7 +214,6 @@ def filter_and_sort(raw_configs: list[str]) -> list[dict]:
             "country_code":     code,
             "ip":               info["ip"],
             "ping":             ping,
-            "config":           info["config"],
             "ovpn_config":      info["config"],
             "protocol":         info["protocol"],
             "num_sessions":     0,
