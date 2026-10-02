@@ -403,7 +403,8 @@ class _ServersPanelState extends State<_ServersPanel> {
       case _ServerFilter.port443:
         return all.where((s) => s.isHardToBlock).toList();
       case _ServerFilter.fast:
-        return all.where((s) => s.ping <= 50).toList();
+        // نستخدم effectivePing (الـ ping الحقيقي إن وُجد) وإلا ping الأصلي
+        return all.where((s) => s.effectivePing <= 100).toList();
       case _ServerFilter.all:
         return all;
     }
@@ -561,6 +562,8 @@ class _ServersPanelState extends State<_ServersPanel> {
                             ),
                           );
                         }
+                        // نأخذ أول 8 سيرفرات من الفلتر الحالي
+                        final displayList = list.take(8).toList();
                         return RefreshIndicator(
                           color: const Color(0xFF7B5CF0),
                           backgroundColor: const Color(0xFF12121E),
@@ -569,13 +572,12 @@ class _ServersPanelState extends State<_ServersPanel> {
                           child: ListView.separated(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 24),
-                            itemCount: list.take(8).length,
+                            itemCount: displayList.length,
                             separatorBuilder: (_, __) =>
                                 const SizedBox(height: 8),
                             itemBuilder: (_, i) {
-                              final s   = list[i];
+                              final s   = displayList[i];
                               final sel = vpn.selectedServer?.ip == s.ip;
-                              // خفّ السيرفرات لو Anti-Block شغال
                               return Opacity(
                                 opacity: antiBlockOn ? 0.3 : 1.0,
                                 child: IgnorePointer(
@@ -652,7 +654,7 @@ class _FilterBadge extends StatelessWidget {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          padding: const EdgeInsets.symmetric(vertical: 10),
+          height: 52, // ارتفاع ثابت لكل الباجات
           decoration: BoxDecoration(
             color: active
                 ? activeColor.withValues(alpha: 0.12)
@@ -666,6 +668,7 @@ class _FilterBadge extends StatelessWidget {
             ),
           ),
           child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon,
                   size: 16,

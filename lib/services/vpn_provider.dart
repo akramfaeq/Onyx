@@ -352,10 +352,14 @@ class VpnProvider extends ChangeNotifier {
         if (isConnecting) {
           _vpn?.disconnect();
           _connState     = ConnectionState.failed;
-          _statusMessage = 'Trying next server...';
+          _statusMessage = 'Connection failed. Trying another server...';
           notifyListeners();
           Timer(const Duration(seconds: 2), () {
-            if (_connState == ConnectionState.failed) connectFastest();
+            if (_connState == ConnectionState.failed) {
+              // أضف السيرفر الحالي للمجربين قبل ما نجرب غيره
+              if (_selected != null) _triedServers.add(_selected!.ip);
+              connectFastest();
+            }
           });
         }
       },
@@ -382,6 +386,7 @@ class VpnProvider extends ChangeNotifier {
     if (_servers.isEmpty) await fetchServers();
 
     // في الدول المحجوبة — جرب port 443 أولاً
+    // نأخذ جميع السيرفرات بغض النظر عن قيمة الـ ping
     final available = serversForRegion
         .where((s) => s.ovpnConfig.isNotEmpty)
         .toList();
@@ -541,7 +546,7 @@ class VpnProvider extends ChangeNotifier {
     _servers.clear();
     for (final m in cached) {
       final s = VpnServer.fromMap(m);
-      if (s.ovpnConfig.isEmpty || s.ping > 300) continue;
+      if (s.ovpnConfig.isEmpty) continue; // لا نحذف بناءً على ping
       _servers.add(s);
     }
     _sortServers();
