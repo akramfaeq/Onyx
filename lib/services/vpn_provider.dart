@@ -116,7 +116,7 @@ class VpnServer {
     countryCode:    m['country_code'] ?? '',
     ip:             m['ip'] ?? '',
     ping:           (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig:     m['ovpn_config'] ?? '',
+    ovpnConfig:     (m['ovpn_config'] ?? '').replaceAll('\\r\\n', '\n').replaceAll('\\n', '\n'),
     numSessions:    (m['num_sessions'] as num?)?.toInt() ?? 0,
     isHardToBlock:  m['is_hard_to_block'] == true,
     realPing:       (m['real_ping'] as num?)?.toInt() ?? -1,

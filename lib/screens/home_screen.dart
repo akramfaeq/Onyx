@@ -4,6 +4,7 @@ import '../services/vpn_provider.dart';
 import '../services/ads_service.dart';
 import 'servers_screen.dart';
 import 'info_screen.dart';
+import 'debug_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -40,25 +41,31 @@ class _TopBar extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          RichText(
-            text: const TextSpan(children: [
-              TextSpan(
-                text: 'Onyx',
-                style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-              TextSpan(
-                text: 'VPN',
-                style: TextStyle(
-                    color: Color(0xFF7B5CF0),
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -0.5),
-              ),
-            ]),
+          GestureDetector(
+            onLongPress: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const DebugScreen()),
+            ),
+            child: RichText(
+              text: const TextSpan(children: [
+                TextSpan(
+                  text: 'Onyx',
+                  style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+                TextSpan(
+                  text: 'VPN',
+                  style: TextStyle(
+                      color: Color(0xFF7B5CF0),
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5),
+                ),
+              ]),
+            ),
           ),
           GestureDetector(
             onTap: () => Navigator.push(context,
