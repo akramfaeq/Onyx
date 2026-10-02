@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:openvpn_flutter/openvpn_flutter.dart';
+import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
@@ -28,13 +28,6 @@ Future<void> _hideNotification() async {
 }
 
 // ─── helpers ──────────────────────────────────────────────────
-String _fixNewlines(String raw) => raw
-    .replaceAll('\\r\\n', '\n')
-    .replaceAll('\\r', '\n')
-    .replaceAll('\\n', '\n')
-    .replaceAll('\r\n', '\n')
-    .replaceAll('\r', '\n');
-
 String cleanCountryName(String raw) =>
     raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
 
@@ -60,9 +53,10 @@ class VpnServer {
   final String countryCode;
   final String ip;
   final int ping;
-  final String ovpnConfig;
+  final String config; // V2Ray config (vless:// vmess:// trojan://)
+  final String protocol; // vless / vmess / trojan / ss
   final int numSessions;
-  final bool isHardToBlock; // true = port 443
+  final bool isHardToBlock;
   int realPing;
 
   VpnServer({
@@ -70,7 +64,8 @@ class VpnServer {
     required this.countryCode,
     required this.ip,
     required this.ping,
-    required this.ovpnConfig,
+    required this.config,
+    this.protocol = 'vless',
     this.numSessions = 0,
     this.isHardToBlock = false,
     this.realPing = -1,
@@ -108,14 +103,15 @@ class VpnServer {
   }
 
   Map<String, dynamic> toMap() => {
-    'country_name':      countryName,
-    'country_code':      countryCode,
-    'ip':                ip,
-    'ping':              ping,
-    'real_ping':         realPing,
-    'ovpn_config':       ovpnConfig,
-    'num_sessions':      numSessions,
-    'is_hard_to_block':  isHardToBlock,
+    'country_name':     countryName,
+    'country_code':     countryCode,
+    'ip':               ip,
+    'ping':             ping,
+    'real_ping':        realPing,
+    'config':           config,
+    'protocol':         protocol,
+    'num_sessions':     numSessions,
+    'is_hard_to_block': isHardToBlock,
   };
 
   factory VpnServer.fromMap(Map<String, dynamic> m) => VpnServer(
@@ -123,7 +119,8 @@ class VpnServer {
     countryCode:    m['country_code'] ?? '',
     ip:             m['ip'] ?? '',
     ping:           (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig:     _fixNewlines(m['ovpn_config'] ?? ''),
+    config:         m['config'] ?? m['ovpn_config'] ?? '',
+    protocol:       m['protocol'] ?? 'vless',
     numSessions:    (m['num_sessions'] as num?)?.toInt() ?? 0,
     isHardToBlock:  m['is_hard_to_block'] == true,
     realPing:       (m['real_ping'] as num?)?.toInt() ?? -1,
@@ -135,32 +132,17 @@ class VpnProvider extends ChangeNotifier {
   final List<VpnServer> _servers = [];
   List<VpnServer> get servers => _servers;
 
-  // سيرفرات مفلترة حسب البلد
   List<VpnServer> get serversForRegion {
     if (_isRestrictedRegion) {
-      // إيران والدول المحجوبة — port 443 أولاً ثم الباقي
       final hard   = _servers.where((s) => s.isHardToBlock).toList();
       final normal = _servers.where((s) => !s.isHardToBlock).toList();
       return [...hard, ...normal];
     }
-    // دول عادية — الترتيب الافتراضي
     return _servers;
   }
 
   bool _isRestrictedRegion = false;
   bool get isRestrictedRegion => _isRestrictedRegion;
-
-  bool _antiBlockMode = false;
-  bool get antiBlockMode => _antiBlockMode;
-
-  void toggleAntiBlock() {
-    _antiBlockMode = !_antiBlockMode;
-    // لو Anti-Block شغال — افصل السيرفر الحالي
-    if (_antiBlockMode && (isConnected || isConnecting)) {
-      disconnect();
-    }
-    notifyListeners();
-  }
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -193,143 +175,111 @@ class VpnProvider extends ChangeNotifier {
   DateTime? _connectedAt;
   Timer? _statsTimer;
   Timer? _connectionTimeout;
-
-  OpenVPN? _vpn;
-  final List<String> _trustedIps = [];
-
-  bool _userDisconnected   = false;
-  bool _isSwitchingServer  = false;
   Timer? _disconnectDebounce;
-  VPNStage? _lastStage;
+
+  // ─── flutter_v2ray ────────────────────────────────────────
+  late final FlutterV2ray _v2ray = FlutterV2ray(
+    onStatusChanged: (status) {
+      _onV2RayStatus(status);
+    },
+  );
+
+  bool _v2rayInitialized = false;
+  bool _userDisconnected = false;
+  bool _isSwitchingServer = false;
+  final Set<String> _triedServers = {};
+  final List<String> _trustedIps = [];
 
   static const int _timeoutSeconds = 30;
 
   VpnProvider() {
-    _initOpenVpn();
-    _detectRegion(); // اكتشف البلد عند البداية
+    _initV2Ray();
+    _detectRegion();
   }
 
-  // ─── Detect Region ────────────────────────────────────────
-  Future<void> _detectRegion() async {
-    // قائمة الدول المحجوبة
-    const restrictedCountries = {
-      'IR', // إيران
-      'CN', // الصين
-      'RU', // روسيا
-      'TR', // تركيا
-      'PK', // باكستان
-      'BD', // بنغلاديش
-      'EG', // مصر
-      'SA', // السعودية
-      'AE', // الإمارات
-      'QA', // قطر
-      'KW', // الكويت
-      'OM', // عُمان
-      'BH', // البحرين
-    };
+  // ─── Init V2Ray ───────────────────────────────────────────
+  Future<void> _initV2Ray() async {
+    await _v2ray.initializeV2Ray(
+      notificationIconResourceType: 'drawable',
+      notificationIconResourceName: 'ic_vpn_notification',
+    );
+    _v2rayInitialized = true;
+  }
 
-    try {
-      final res = await http.get(
-        Uri.parse('https://ip-api.com/json/?fields=countryCode'),
-      ).timeout(const Duration(seconds: 5));
+  // ─── Status Handler ───────────────────────────────────────
+  void _onV2RayStatus(V2RayStatus status) {
+    final state = status.state;
 
-      if (res.statusCode == 200) {
-        final data       = jsonDecode(res.body);
-        final countryCode = data['countryCode'] as String? ?? '';
-        _isRestrictedRegion = restrictedCountries.contains(countryCode);
-        debugPrint('📍 البلد: $countryCode | محجوب: $_isRestrictedRegion');
-        notifyListeners();
+    if (state == 'CONNECTED') {
+      _disconnectDebounce?.cancel();
+      _connectionTimeout?.cancel();
+      _connState     = ConnectionState.connected;
+      _statusMessage = '';
+      _triedServers.clear();
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
+
+      if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
+        _trustedIps.insert(0, _selected!.ip);
+        if (_trustedIps.length > 10) _trustedIps.removeLast();
       }
-    } catch (e) {
-      debugPrint('⚠️ تعذّر اكتشاف البلد: $e');
-    }
-  }
 
-  // ─── Init OpenVPN ─────────────────────────────────────────
-  void _initOpenVpn() {
-    _vpn = OpenVPN(
-      onVpnStageChanged: (stage, _) {
-        if (stage == _lastStage) return;
-        _lastStage = stage;
+      _connectedAt = DateTime.now();
+      _startStats();
+      AdsService.showInterstitialAfterSuccess(1);
+      _showNotification(
+        _selected?.countryName ?? 'VPN',
+        _selected?.effectivePing ?? -1,
+      );
+      notifyListeners();
 
-        if (stage == VPNStage.connected) {
-          _disconnectDebounce?.cancel();
+    } else if (state == 'DISCONNECTED') {
+      _disconnectDebounce?.cancel();
+      _disconnectDebounce = Timer(
+        const Duration(milliseconds: 1500),
+        () {
+          if (_isSwitchingServer) return;
           _connectionTimeout?.cancel();
-          _connState     = ConnectionState.connected;
-          _statusMessage = '';
-          _triedServers.clear();
-
-          if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
-            _trustedIps.insert(0, _selected!.ip);
-            if (_trustedIps.length > 10) _trustedIps.removeLast();
-          }
-          _connectedAt = DateTime.now();
-          _startStats();
-          AdsService.showInterstitialAfterSuccess(1);
-          _showNotification(
-            _selected?.countryName ?? 'VPN',
-            _selected?.effectivePing ?? -1,
-          );
-          notifyListeners();
-
-        } else if (stage == VPNStage.disconnected) {
-          _disconnectDebounce?.cancel();
-          _disconnectDebounce = Timer(
-            const Duration(milliseconds: 1500),
-            () {
-              if (_isSwitchingServer) return;
-              _connectionTimeout?.cancel();
-              _stopStats();
-              if (_userDisconnected) {
-                _connState     = ConnectionState.disconnected;
-                _statusMessage = '';
-              } else if (_connState == ConnectionState.loading) {
-                _connState     = ConnectionState.failed;
-                _statusMessage = 'Trying next server...';
-                notifyListeners();
-                Timer(const Duration(seconds: 2), () {
-                  if (_connState == ConnectionState.failed) {
-                    connectFastest();
-                  }
-                });
-              } else {
-                _connState     = ConnectionState.disconnected;
-                _statusMessage = '';
+          _stopStats();
+          if (_userDisconnected) {
+            _connState     = ConnectionState.disconnected;
+            _statusMessage = '';
+          } else if (_connState == ConnectionState.loading) {
+            _connState     = ConnectionState.failed;
+            _statusMessage = 'Trying next server...';
+            notifyListeners();
+            Timer(const Duration(seconds: 2), () {
+              if (_connState == ConnectionState.failed) {
+                connectFastest();
               }
-              notifyListeners();
-            },
-          );
-
-        } else if (stage == VPNStage.connecting   ||
-                   stage == VPNStage.authenticating ||
-                   stage == VPNStage.vpn_generate_config ||
-                   stage == VPNStage.prepare) {
-          _disconnectDebounce?.cancel();
-          _connState     = ConnectionState.loading;
-          _statusMessage = stage == VPNStage.authenticating
-              ? 'Authenticating...'
-              : 'Connecting...';
+            });
+          } else {
+            _connState     = ConnectionState.disconnected;
+            _statusMessage = '';
+          }
           notifyListeners();
-        }
-      },
-      onVpnStatusChanged: (status) {
-        if (status != null) {
-          _downloadSpeed = formatSpeed(status.byteIn  ?? '0');
-          _uploadSpeed   = formatSpeed(status.byteOut ?? '0');
-          notifyListeners();
-        }
-      },
-    );
+        },
+      );
 
-    _vpn!.initialize(
-      groupIdentifier:          'com.onyxvpn.onyx_vpn',
-      providerBundleIdentifier: 'com.onyxvpn.onyx_vpn',
-      localizedDescription:     'OnyxVPN',
-    );
+    } else if (state == 'CONNECTING') {
+      _disconnectDebounce?.cancel();
+      _connState     = ConnectionState.loading;
+      _statusMessage = 'Connecting...';
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
+      notifyListeners();
+
+    } else {
+      // حدّث السرعة حتى في الحالات الأخرى
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
+      notifyListeners();
+    }
   }
 
   // ─── Connect To ───────────────────────────────────────────
   Future<void> connectTo(VpnServer server) async {
+    if (!_v2rayInitialized) return;
     if (_selected?.ip == server.ip && isConnected) return;
 
     _connectionTimeout?.cancel();
@@ -337,33 +287,40 @@ class VpnProvider extends ChangeNotifier {
 
     if (isConnected || isConnecting) {
       _isSwitchingServer = true;
-      _vpn?.disconnect();
+      await _v2ray.stopV2Ray();
       _stopStats();
       notifyListeners();
       await Future.delayed(const Duration(milliseconds: 800));
       _isSwitchingServer = false;
     }
 
-    if (server.ovpnConfig.isEmpty) return;
+    if (server.config.isEmpty) return;
 
-    _userDisconnected  = false;
-    _lastStage         = null;
-    _selected          = server;
-    _connState         = ConnectionState.loading;
-    _statusMessage     = 'Connecting...';
+    // طلب إذن VPN من المستخدم
+    final hasPermission = await FlutterV2ray.requestPermission();
+    if (!hasPermission) {
+      _connState     = ConnectionState.failed;
+      _statusMessage = 'VPN permission denied';
+      notifyListeners();
+      return;
+    }
+
+    _userDisconnected = false;
+    _selected         = server;
+    _connState        = ConnectionState.loading;
+    _statusMessage    = 'Connecting...';
     notifyListeners();
 
     _connectionTimeout = Timer(
       const Duration(seconds: _timeoutSeconds),
       () {
         if (isConnecting) {
-          _vpn?.disconnect();
+          _v2ray.stopV2Ray();
           _connState     = ConnectionState.failed;
           _statusMessage = 'Connection failed. Trying another server...';
           notifyListeners();
           Timer(const Duration(seconds: 2), () {
             if (_connState == ConnectionState.failed) {
-              // أضف السيرفر الحالي للمجربين قبل ما نجرب غيره
               if (_selected != null) _triedServers.add(_selected!.ip);
               connectFastest();
             }
@@ -373,17 +330,21 @@ class VpnProvider extends ChangeNotifier {
     );
 
     try {
-      _vpn?.connect(
-        server.ovpnConfig,
-        server.countryName,
-        username:      'vpn',
-        password:      'vpn',
-        certIsRequired: false,
+      // حوّل الـ config لـ V2Ray JSON
+      final v2rayURL = V2RayURL.parseURL(server.config);
+      await _v2ray.startV2Ray(
+        remark:          server.countryName,
+        config:          v2rayURL.getFullConfiguration(),
+        blockedApps:     null,
+        bypassSubnets:   null,
+        proxyOnly:       false,
+        notificationDisconnectButtonName: 'Disconnect',
       );
-    } catch (_) {
+    } catch (e) {
       _connState     = ConnectionState.failed;
       _connectionTimeout?.cancel();
       _statusMessage = 'Connection failed';
+      debugPrint('V2Ray connect error: $e');
       notifyListeners();
     }
   }
@@ -392,10 +353,8 @@ class VpnProvider extends ChangeNotifier {
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
 
-    // في الدول المحجوبة — جرب port 443 أولاً
-    // نأخذ جميع السيرفرات بغض النظر عن قيمة الـ ping
     final available = serversForRegion
-        .where((s) => s.ovpnConfig.isNotEmpty)
+        .where((s) => s.config.isNotEmpty)
         .toList();
 
     if (available.isEmpty) return;
@@ -413,18 +372,15 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  final Set<String> _triedServers = {};
-
   // ─── Disconnect ───────────────────────────────────────────
   Future<void> disconnect() async {
     _userDisconnected  = true;
     _isSwitchingServer = false;
     _disconnectDebounce?.cancel();
     _connectionTimeout?.cancel();
-    _lastStage         = null;
     _triedServers.clear();
 
-    _vpn?.disconnect();
+    await _v2ray.stopV2Ray();
     _connState     = ConnectionState.disconnected;
     _selected      = null;
     _statusMessage = '';
@@ -433,26 +389,13 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Measure Real Ping ────────────────────────────────────
-  Future<int> _measurePing(String ip) async {
+  // ─── Ping ─────────────────────────────────────────────────
+  Future<int> _measurePing(VpnServer server) async {
     try {
-      final start  = DateTime.now();
-      final socket = await Socket.connect(ip, 443,
-          timeout: const Duration(seconds: 3));
-      final ms = DateTime.now().difference(start).inMilliseconds;
-      socket.destroy();
-      return ms;
+      final delay = await _v2ray.getServerDelay(config: V2RayURL.parseURL(server.config).getFullConfiguration());
+      return delay;
     } catch (_) {
-      try {
-        final start  = DateTime.now();
-        final socket = await Socket.connect(ip, 1194,
-            timeout: const Duration(seconds: 3));
-        final ms = DateTime.now().difference(start).inMilliseconds;
-        socket.destroy();
-        return ms;
-      } catch (_) {
-        return 9999;
-      }
+      return 9999;
     }
   }
 
@@ -463,7 +406,7 @@ class VpnProvider extends ChangeNotifier {
 
     final batch = _servers.take(20).toList();
     final pings = await Future.wait(
-      batch.map((s) => _measurePing(s.ip)),
+      batch.map((s) => _measurePing(s)),
     );
 
     for (int i = 0; i < batch.length; i++) {
@@ -503,6 +446,28 @@ class VpnProvider extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
+  // ─── Detect Region ────────────────────────────────────────
+  Future<void> _detectRegion() async {
+    const restrictedCountries = {
+      'IR', 'CN', 'RU', 'TR', 'PK', 'BD',
+      'EG', 'SA', 'AE', 'QA', 'KW', 'OM', 'BH',
+    };
+    try {
+      final res = await http.get(
+        Uri.parse('https://ip-api.com/json/?fields=countryCode'),
+      ).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) {
+        final data        = jsonDecode(res.body);
+        final countryCode = data['countryCode'] as String? ?? '';
+        _isRestrictedRegion = restrictedCountries.contains(countryCode);
+        debugPrint('📍 البلد: $countryCode | محجوب: $_isRestrictedRegion');
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('⚠️ تعذّر اكتشاف البلد: $e');
+    }
+  }
+
   // ─── Fetch Servers ────────────────────────────────────────
   Future<void> fetchServers({bool forceRefresh = false}) async {
     _serversError = null;
@@ -523,7 +488,7 @@ class VpnProvider extends ChangeNotifier {
     _servers.clear();
     notifyListeners();
 
-    final list = await _fetchSupabase();
+    final list = await _fetchAllSources();
 
     if (list.isNotEmpty) {
       _applyServers(list);
@@ -539,7 +504,7 @@ class VpnProvider extends ChangeNotifier {
 
   Future<void> _backgroundRefresh() async {
     try {
-      final list = await _fetchSupabase();
+      final list = await _fetchAllSources();
       if (list.isNotEmpty) {
         _applyServers(list);
         await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
@@ -553,7 +518,7 @@ class VpnProvider extends ChangeNotifier {
     _servers.clear();
     for (final m in cached) {
       final s = VpnServer.fromMap(m);
-      if (s.ovpnConfig.isEmpty) continue; // لا نحذف بناءً على ping
+      if (s.config.isEmpty) continue;
       _servers.add(s);
     }
     _sortServers();
@@ -580,9 +545,10 @@ class VpnProvider extends ChangeNotifier {
     });
   }
 
-  // ─── Fetch Supabase ───────────────────────────────────────
-  Future<List<VpnServer>> _fetchSupabase() async {
-    // ① Cloudflare Worker أولاً
+  // ─── Fetch All Sources ────────────────────────────────────
+  // المصادر بالترتيب: Cloudflare Worker ← Supabase ← GitHub
+  Future<List<VpnServer>> _fetchAllSources() async {
+    // ① Cloudflare Worker (Supabase mirror)
     try {
       final res = await http.get(
         Uri.parse('https://vpn.akramfaeq523.workers.dev/servers'),
@@ -591,10 +557,10 @@ class VpnProvider extends ChangeNotifier {
       if (res.statusCode == 200) {
         final list = (jsonDecode(res.body) as List)
             .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
-            .where((s) => s.ovpnConfig.isNotEmpty)
+            .where((s) => s.config.isNotEmpty)
             .toList();
         if (list.isNotEmpty) {
-          debugPrint('✅ Servers via Cloudflare Worker: ${list.length}');
+          debugPrint('✅ Servers via Worker: ${list.length}');
           return list;
         }
       }
@@ -602,43 +568,126 @@ class VpnProvider extends ChangeNotifier {
       debugPrint('⚠️ Worker failed: $e');
     }
 
-    // ② Supabase SDK
+    // ② Supabase
     try {
       final res = await Supabase.instance.client
           .from('servers')
           .select()
           .eq('is_active', true)
-          .lte('ping', 300)
           .order('ping', ascending: true)
           .limit(80);
 
       final list = (res as List)
           .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
-          .where((s) => s.ovpnConfig.isNotEmpty)
+          .where((s) => s.config.isNotEmpty)
           .toList();
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // ③ Supabase HTTP
-    try {
-      const url = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
-      const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
-      final uri = Uri.parse('$url/rest/v1/servers?is_active=eq.true&ping=lte.300&order=ping.asc&limit=80');
-      final res = await http.get(uri, headers: {
-        'apikey': key,
-        'Authorization': 'Bearer $key',
-      }).timeout(const Duration(seconds: 12));
+    // ③ GitHub — مصادر V2Ray مجانية محدّثة كل 15 دقيقة
+    return await _fetchFromGitHub();
+  }
 
-      if (res.statusCode == 200) {
-        final list = (jsonDecode(res.body) as List)
-            .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
-            .where((s) => s.ovpnConfig.isNotEmpty)
+  // ─── GitHub Free V2Ray Sources ────────────────────────────
+  // هذي المصادر تشتغل بإيران وتتحدث تلقائياً
+  static const _githubSources = [
+    // top100 — مفلترة ومتحقق منها
+    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt',
+    // verified — كل config اختبرها 3 مرات
+    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt',
+    // fast — أسرع السيرفرات
+    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/fast/configs.txt',
+    // مصدر ثاني — يتحدث كل 5 دقائق
+    'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub1.txt',
+    'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub2.txt',
+  ];
+
+  Future<List<VpnServer>> _fetchFromGitHub() async {
+    final allConfigs = <String>[];
+
+    for (final url in _githubSources) {
+      try {
+        final res = await http.get(Uri.parse(url))
+            .timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) continue;
+
+        String body = res.body;
+        // لو base64 فك التشفير
+        if (!body.contains('://')) {
+          try { body = utf8.decode(base64.decode(body.trim())); } catch (_) {}
+        }
+
+        final lines = body.split('\n')
+            .map((l) => l.trim())
+            .where((l) =>
+                l.startsWith('vless://') ||
+                l.startsWith('vmess://') ||
+                l.startsWith('trojan://') ||
+                l.startsWith('ss://'))
             .toList();
-        if (list.isNotEmpty) return list;
-      }
-    } catch (_) {}
 
-    return [];
+        allConfigs.addAll(lines);
+        debugPrint('✅ GitHub ${url.split('/').last}: ${lines.length} configs');
+
+        if (allConfigs.length >= 200) break;
+      } catch (e) {
+        debugPrint('⚠️ GitHub source failed: $e');
+      }
+    }
+
+    if (allConfigs.isEmpty) return [];
+
+    // حوّل الـ configs لـ VpnServer
+    final servers = <VpnServer>[];
+    final seen    = <String>{};
+    final rng     = Random();
+
+    for (final configStr in allConfigs) {
+      try {
+        final parsed = V2RayURL.parseURL(configStr);
+        final ip     = parsed.address;
+        if (ip.isEmpty || seen.contains(ip)) continue;
+        seen.add(ip);
+
+        final protocol = configStr.split('://').first.toLowerCase();
+        final isTls    = configStr.contains('tls') || configStr.contains(':443');
+
+        servers.add(VpnServer(
+          countryName:    parsed.remark.isNotEmpty ? parsed.remark : 'Unknown',
+          countryCode:    _guessCountryCode(parsed.remark),
+          ip:             ip,
+          ping:           rng.nextInt(150) + 50, // ping مؤقت حتى نقيسه
+          config:         configStr,
+          protocol:       protocol,
+          isHardToBlock:  isTls,
+        ));
+
+        if (servers.length >= 80) break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    debugPrint('✅ GitHub total servers: ${servers.length}');
+    return servers;
+  }
+
+  // ─── Guess Country Code from Remark ───────────────────────
+  String _guessCountryCode(String remark) {
+    final r = remark.toUpperCase();
+    if (r.contains('US') || r.contains('UNITED STATES') || r.contains('AMERICA')) return 'US';
+    if (r.contains('DE') || r.contains('GERMANY') || r.contains('DEUTSCH')) return 'DE';
+    if (r.contains('NL') || r.contains('NETHERLANDS') || r.contains('HOLLAND')) return 'NL';
+    if (r.contains('FR') || r.contains('FRANCE')) return 'FR';
+    if (r.contains('GB') || r.contains('UK') || r.contains('BRITAIN')) return 'GB';
+    if (r.contains('JP') || r.contains('JAPAN')) return 'JP';
+    if (r.contains('SG') || r.contains('SINGAPORE')) return 'SG';
+    if (r.contains('TR') || r.contains('TURKEY')) return 'TR';
+    if (r.contains('CA') || r.contains('CANADA')) return 'CA';
+    if (r.contains('AU') || r.contains('AUSTRALIA')) return 'AU';
+    if (r.contains('FI') || r.contains('FINLAND')) return 'FI';
+    if (r.contains('SE') || r.contains('SWEDEN')) return 'SE';
+    return 'UN';
   }
 
   @override
