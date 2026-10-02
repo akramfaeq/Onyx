@@ -1,7 +1,8 @@
 """
 update_servers.py
 يجيب سيرفرات VPN من VPNGate، يختبرهم، يحفظهم في Supabase.
-السيرفرات على port 443 تجي أولاً (تشتغل بإيران والدول المحظورة)
+- port 443 → is_hard_to_block = true  (للدول المحجوبة)
+- port 1194 → is_hard_to_block = false (للدول العادية)
 """
 
 import os
@@ -19,13 +20,10 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 MAX_PING_MS     = 300
 MAX_SERVERS     = 80
 MAX_PER_COUNTRY = 3
-TCP_TIMEOUT     = 5
+TCP_TIMEOUT     = 8
 MAX_WORKERS     = 30
 
 
-# ──────────────────────────────────────────────
-# جيب من VPNGate
-# ──────────────────────────────────────────────
 def fetch_vpngate() -> list[dict]:
     urls = [
         "https://www.vpngate.net/api/iphone/",
@@ -60,7 +58,6 @@ def fetch_vpngate() -> list[dict]:
                         continue
                     sessions = int(row[7]) if row[7].isdigit() else 0
 
-                    # استخرج الـ port من الكونفيغ
                     port = 1194
                     for line in config.splitlines():
                         if line.startswith("remote "):
@@ -70,17 +67,17 @@ def fetch_vpngate() -> list[dict]:
                             break
 
                     servers.append({
-                        "country_name": country_name,
-                        "country_code": country_code,
-                        "ip":           row[1],
-                        "port":         port,
-                        "ping":         ping,
-                        "ovpn_config":  config,
-                        "num_sessions": sessions,
-                        "protocol":     "openvpn",
-                        "is_active":    True,
-                        "source":       "vpngate",
-                        "is_hard_to_block": port == 443,  # علّم سيرفرات 443
+                        "country_name":     country_name,
+                        "country_code":     country_code,
+                        "ip":               row[1],
+                        "port":             port,
+                        "ping":             ping,
+                        "ovpn_config":      config,
+                        "num_sessions":     sessions,
+                        "protocol":         "openvpn",
+                        "is_active":        True,
+                        "source":           "vpngate",
+                        "is_hard_to_block": port == 443,
                     })
                     if len(servers) >= 300:
                         break
@@ -88,9 +85,8 @@ def fetch_vpngate() -> list[dict]:
                     continue
 
             if servers:
-                print(f"[VPNGate] جبنا {len(servers)} سيرفر")
-                port443 = [s for s in servers if s["port"] == 443]
-                print(f"[VPNGate] منهم {len(port443)} على port 443")
+                p443 = sum(1 for s in servers if s["port"] == 443)
+                print(f"[VPNGate] جبنا {len(servers)} سيرفر ({p443} على port 443)")
                 return servers
 
         except Exception as e:
@@ -99,9 +95,6 @@ def fetch_vpngate() -> list[dict]:
     return []
 
 
-# ──────────────────────────────────────────────
-# TCP test
-# ──────────────────────────────────────────────
 def tcp_test(server: dict) -> bool:
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -122,13 +115,11 @@ def test_all(servers: list[dict]) -> list[dict]:
             s = futures[future]
             if future.result():
                 alive.append(s)
-    print(f"[Test] {len(alive)} سيرفر حي")
+    p443 = sum(1 for s in alive if s["port"] == 443)
+    print(f"[Test] {len(alive)} سيرفر حي ({p443} على port 443)")
     return alive
 
 
-# ──────────────────────────────────────────────
-# فلتر وترتيب — port 443 أولاً
-# ──────────────────────────────────────────────
 def filter_and_sort(servers: list[dict]) -> list[dict]:
     seen_ips = set()
     filtered = []
@@ -139,9 +130,8 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
         filtered.append(s)
 
     def score(s):
-        # port 443 يأخذ أولوية — ping وهمي أقل
-        port_bonus = -100 if s["port"] == 443 else 0
-        congestion = min(s.get("num_sessions", 0) // 10, 200)
+        port_bonus  = -100 if s["port"] == 443 else 0
+        congestion  = min(s.get("num_sessions", 0) // 10, 200)
         return s["ping"] + congestion + port_bonus
 
     filtered.sort(key=score)
@@ -150,21 +140,17 @@ def filter_and_sort(servers: list[dict]) -> list[dict]:
     result = []
     for s in filtered:
         cc = s["country_code"]
-        count = country_count.get(cc, 0)
-        if count < MAX_PER_COUNTRY:
+        if country_count.get(cc, 0) < MAX_PER_COUNTRY:
             result.append(s)
-            country_count[cc] = count + 1
+            country_count[cc] = country_count.get(cc, 0) + 1
         if len(result) >= MAX_SERVERS:
             break
 
-    port443 = [s for s in result if s["port"] == 443]
-    print(f"[Filter] {len(result)} سيرفر — منهم {len(port443)} على port 443")
+    p443 = sum(1 for s in result if s["port"] == 443)
+    print(f"[Filter] {len(result)} سيرفر ({p443} على port 443)")
     return result
 
 
-# ──────────────────────────────────────────────
-# ارفع على Supabase
-# ──────────────────────────────────────────────
 def upload_to_supabase(servers: list[dict]):
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -186,9 +172,6 @@ def upload_to_supabase(servers: list[dict]):
     print(f"[Supabase] ✅ اكتمل — {len(servers)} سيرفر")
 
 
-# ──────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────
 def main():
     print("=" * 50)
     print("بدأ تحديث السيرفرات")
@@ -200,20 +183,20 @@ def main():
         return
 
     filtered = filter_and_sort(servers)
-    alive = test_all(filtered)
+    alive    = test_all(filtered)
 
     if not alive:
         print("❌ كل السيرفرات ميتة!")
         return
 
-    # رتّب مرة ثانية بعد الفلتر — port 443 أولاً
+    # port 443 أولاً في الـ Supabase
     alive.sort(key=lambda s: (0 if s.get("is_hard_to_block") else 1, s["ping"]))
 
     upload_to_supabase(alive)
 
-    port443 = [s for s in alive if s.get("is_hard_to_block")]
+    p443 = sum(1 for s in alive if s.get("is_hard_to_block"))
     print("=" * 50)
-    print(f"✅ {len(alive)} سيرفر شغال — {len(port443)} منهم port 443")
+    print(f"✅ {len(alive)} سيرفر شغال — {p443} منهم port 443")
     print("=" * 50)
 
 
