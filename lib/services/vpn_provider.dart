@@ -31,12 +31,11 @@ Future<void> _hideNotification() async {
 String cleanCountryName(String raw) =>
     raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
 
-String formatSpeed(String raw) {
-  final num = double.tryParse(raw.replaceAll(RegExp(r'[^0-9.]'), ''));
-  if (num == null || num == 0) return '0 B/s';
-  if (num >= 1024 * 1024) return '${(num / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-  if (num >= 1024) return '${(num / 1024).toStringAsFixed(1)} KB/s';
-  return '${num.toStringAsFixed(0)} B/s';
+String formatSpeed(int bytes) {
+  if (bytes <= 0) return '0 B/s';
+  if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB/s';
+  return '$bytes B/s';
 }
 
 // ─── Connection State ─────────────────────────────────────────
@@ -53,8 +52,8 @@ class VpnServer {
   final String countryCode;
   final String ip;
   final int ping;
-  final String config; // V2Ray config (vless:// vmess:// trojan://)
-  final String protocol; // vless / vmess / trojan / ss
+  final String config;
+  final String protocol;
   final int numSessions;
   final bool isHardToBlock;
   int realPing;
@@ -143,6 +142,15 @@ class VpnProvider extends ChangeNotifier {
 
   bool _isRestrictedRegion = false;
   bool get isRestrictedRegion => _isRestrictedRegion;
+
+  // ─── Anti-Block Mode ──────────────────────────────────────
+  bool _antiBlockMode = false;
+  bool get antiBlockMode => _antiBlockMode;
+
+  void toggleAntiBlock() {
+    _antiBlockMode = !_antiBlockMode;
+    notifyListeners();
+  }
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -270,7 +278,6 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
 
     } else {
-      // حدّث السرعة حتى في الحالات الأخرى
       _downloadSpeed = formatSpeed(status.download);
       _uploadSpeed   = formatSpeed(status.upload);
       notifyListeners();
@@ -296,8 +303,8 @@ class VpnProvider extends ChangeNotifier {
 
     if (server.config.isEmpty) return;
 
-    // طلب إذن VPN من المستخدم
-    final hasPermission = await FlutterV2ray.requestPermission();
+    // طلب إذن VPN
+    final hasPermission = await _v2ray.requestPermission();
     if (!hasPermission) {
       _connState     = ConnectionState.failed;
       _statusMessage = 'VPN permission denied';
@@ -330,11 +337,11 @@ class VpnProvider extends ChangeNotifier {
     );
 
     try {
-      // حوّل الـ config لـ V2Ray JSON
-      final v2rayURL = V2RayURL.parseURL(server.config);
+      // الـ API الصحيح: FlutterV2ray.parseFromURL
+      final parsed = FlutterV2ray.parseFromURL(server.config);
       await _v2ray.startV2Ray(
         remark:          server.countryName,
-        config:          v2rayURL.getFullConfiguration(),
+        config:          parsed.getFullConfiguration(),
         blockedApps:     null,
         bypassSubnets:   null,
         proxyOnly:       false,
@@ -353,15 +360,15 @@ class VpnProvider extends ChangeNotifier {
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
 
-    final available = serversForRegion
-        .where((s) => s.config.isNotEmpty)
-        .toList();
+    // لو Anti-Block مفعّل، خذ TLS/Reality أولاً
+    final pool = (_antiBlockMode || _isRestrictedRegion)
+        ? serversForRegion
+        : _servers;
 
+    final available = pool.where((s) => s.config.isNotEmpty).toList();
     if (available.isEmpty) return;
 
-    final untried = available
-        .where((s) => !_triedServers.contains(s.ip))
-        .toList();
+    final untried = available.where((s) => !_triedServers.contains(s.ip)).toList();
 
     if (untried.isEmpty) {
       _triedServers.clear();
@@ -392,7 +399,10 @@ class VpnProvider extends ChangeNotifier {
   // ─── Ping ─────────────────────────────────────────────────
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final delay = await _v2ray.getServerDelay(config: V2RayURL.parseURL(server.config).getFullConfiguration());
+      final parsed = FlutterV2ray.parseFromURL(server.config);
+      final delay  = await _v2ray.getServerDelay(
+        config: parsed.getFullConfiguration(),
+      );
       return delay;
     } catch (_) {
       return 9999;
@@ -405,9 +415,7 @@ class VpnProvider extends ChangeNotifier {
     notifyListeners();
 
     final batch = _servers.take(20).toList();
-    final pings = await Future.wait(
-      batch.map((s) => _measurePing(s)),
-    );
+    final pings  = await Future.wait(batch.map((s) => _measurePing(s)));
 
     for (int i = 0; i < batch.length; i++) {
       batch[i].realPing = pings[i];
@@ -415,7 +423,6 @@ class VpnProvider extends ChangeNotifier {
 
     _sortServers();
     await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
-
     _measuringPing = false;
     notifyListeners();
   }
@@ -460,12 +467,9 @@ class VpnProvider extends ChangeNotifier {
         final data        = jsonDecode(res.body);
         final countryCode = data['countryCode'] as String? ?? '';
         _isRestrictedRegion = restrictedCountries.contains(countryCode);
-        debugPrint('📍 البلد: $countryCode | محجوب: $_isRestrictedRegion');
         notifyListeners();
       }
-    } catch (e) {
-      debugPrint('⚠️ تعذّر اكتشاف البلد: $e');
-    }
+    } catch (_) {}
   }
 
   // ─── Fetch Servers ────────────────────────────────────────
@@ -546,27 +550,20 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Fetch All Sources ────────────────────────────────────
-  // المصادر بالترتيب: Cloudflare Worker ← Supabase ← GitHub
   Future<List<VpnServer>> _fetchAllSources() async {
-    // ① Cloudflare Worker (Supabase mirror)
+    // ① Cloudflare Worker
     try {
       final res = await http.get(
         Uri.parse('https://vpn.akramfaeq523.workers.dev/servers'),
       ).timeout(const Duration(seconds: 12));
-
       if (res.statusCode == 200) {
         final list = (jsonDecode(res.body) as List)
             .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
             .where((s) => s.config.isNotEmpty)
             .toList();
-        if (list.isNotEmpty) {
-          debugPrint('✅ Servers via Worker: ${list.length}');
-          return list;
-        }
+        if (list.isNotEmpty) return list;
       }
-    } catch (e) {
-      debugPrint('⚠️ Worker failed: $e');
-    }
+    } catch (_) {}
 
     // ② Supabase
     try {
@@ -576,7 +573,6 @@ class VpnProvider extends ChangeNotifier {
           .eq('is_active', true)
           .order('ping', ascending: true)
           .limit(80);
-
       final list = (res as List)
           .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
           .where((s) => s.config.isNotEmpty)
@@ -584,20 +580,15 @@ class VpnProvider extends ChangeNotifier {
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // ③ GitHub — مصادر V2Ray مجانية محدّثة كل 15 دقيقة
+    // ③ GitHub مباشرة
     return await _fetchFromGitHub();
   }
 
   // ─── GitHub Free V2Ray Sources ────────────────────────────
-  // هذي المصادر تشتغل بإيران وتتحدث تلقائياً
   static const _githubSources = [
-    // top100 — مفلترة ومتحقق منها
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt',
-    // verified — كل config اختبرها 3 مرات
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt',
-    // fast — أسرع السيرفرات
     'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/fast/configs.txt',
-    // مصدر ثاني — يتحدث كل 5 دقائق
     'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub1.txt',
     'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub2.txt',
   ];
@@ -612,7 +603,6 @@ class VpnProvider extends ChangeNotifier {
         if (res.statusCode != 200) continue;
 
         String body = res.body;
-        // لو base64 فك التشفير
         if (!body.contains('://')) {
           try { body = utf8.decode(base64.decode(body.trim())); } catch (_) {}
         }
@@ -627,24 +617,20 @@ class VpnProvider extends ChangeNotifier {
             .toList();
 
         allConfigs.addAll(lines);
-        debugPrint('✅ GitHub ${url.split('/').last}: ${lines.length} configs');
-
         if (allConfigs.length >= 200) break;
-      } catch (e) {
-        debugPrint('⚠️ GitHub source failed: $e');
-      }
+      } catch (_) {}
     }
 
     if (allConfigs.isEmpty) return [];
 
-    // حوّل الـ configs لـ VpnServer
     final servers = <VpnServer>[];
     final seen    = <String>{};
     final rng     = Random();
 
     for (final configStr in allConfigs) {
       try {
-        final parsed = V2RayURL.parseURL(configStr);
+        // استخدم الـ API الصحيح
+        final parsed = FlutterV2ray.parseFromURL(configStr);
         final ip     = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
@@ -656,7 +642,7 @@ class VpnProvider extends ChangeNotifier {
           countryName:    parsed.remark.isNotEmpty ? parsed.remark : 'Unknown',
           countryCode:    _guessCountryCode(parsed.remark),
           ip:             ip,
-          ping:           rng.nextInt(150) + 50, // ping مؤقت حتى نقيسه
+          ping:           rng.nextInt(150) + 50,
           config:         configStr,
           protocol:       protocol,
           isHardToBlock:  isTls,
@@ -668,16 +654,14 @@ class VpnProvider extends ChangeNotifier {
       }
     }
 
-    debugPrint('✅ GitHub total servers: ${servers.length}');
     return servers;
   }
 
-  // ─── Guess Country Code from Remark ───────────────────────
   String _guessCountryCode(String remark) {
     final r = remark.toUpperCase();
-    if (r.contains('US') || r.contains('UNITED STATES') || r.contains('AMERICA')) return 'US';
-    if (r.contains('DE') || r.contains('GERMANY') || r.contains('DEUTSCH')) return 'DE';
-    if (r.contains('NL') || r.contains('NETHERLANDS') || r.contains('HOLLAND')) return 'NL';
+    if (r.contains('US') || r.contains('UNITED STATES')) return 'US';
+    if (r.contains('DE') || r.contains('GERMANY')) return 'DE';
+    if (r.contains('NL') || r.contains('NETHERLANDS')) return 'NL';
     if (r.contains('FR') || r.contains('FRANCE')) return 'FR';
     if (r.contains('GB') || r.contains('UK') || r.contains('BRITAIN')) return 'GB';
     if (r.contains('JP') || r.contains('JAPAN')) return 'JP';
