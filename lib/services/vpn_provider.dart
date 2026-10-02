@@ -28,6 +28,13 @@ Future<void> _hideNotification() async {
 }
 
 // ─── helpers ──────────────────────────────────────────────────
+String _fixNewlines(String raw) => raw
+    .replaceAll('\\r\\n', '\n')
+    .replaceAll('\\r', '\n')
+    .replaceAll('\\n', '\n')
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n');
+
 String cleanCountryName(String raw) =>
     raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
 
@@ -116,7 +123,7 @@ class VpnServer {
     countryCode:    m['country_code'] ?? '',
     ip:             m['ip'] ?? '',
     ping:           (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig:     (m['ovpn_config'] ?? '').replaceAll('\\r\\n', '\n').replaceAll('\\n', '\n'),
+    ovpnConfig:     _fixNewlines(m['ovpn_config'] ?? ''),
     numSessions:    (m['num_sessions'] as num?)?.toInt() ?? 0,
     isHardToBlock:  m['is_hard_to_block'] == true,
     realPing:       (m['real_ping'] as num?)?.toInt() ?? -1,
