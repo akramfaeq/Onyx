@@ -40,10 +40,9 @@ String formatSpeed(String raw) {
 }
 
 // ─── Connection State ─────────────────────────────────────────
-// حالة واحدة واضحة بدل حالات متعددة مشتتة
 enum ConnectionState {
   disconnected,
-  loading,    // connecting + authenticating = حالة واحدة
+  loading,
   connected,
   failed,
 }
@@ -56,7 +55,7 @@ class VpnServer {
   final int ping;
   final String ovpnConfig;
   final int numSessions;
-  // ✅ ping حقيقي مقاس من الجهاز
+  final bool isHardToBlock; // true = port 443
   int realPing;
 
   VpnServer({
@@ -66,15 +65,16 @@ class VpnServer {
     required this.ping,
     required this.ovpnConfig,
     this.numSessions = 0,
-    this.realPing = -1, // -1 يعني لم يُقس بعد
+    this.isHardToBlock = false,
+    this.realPing = -1,
   });
 
-  // ✅ الترتيب بالـ ping الحقيقي إذا متوفر، وإلا من القاعدة
   int get effectivePing => realPing > 0 ? realPing : ping;
 
   int get score {
     final congestion = (numSessions / 10).clamp(0, 200).toInt();
-    return effectivePing + congestion;
+    final hardBonus  = isHardToBlock ? -100 : 0;
+    return effectivePing + congestion + hardBonus;
   }
 
   String get flag {
@@ -86,7 +86,7 @@ class VpnServer {
 
   String get pingLabel {
     final p = effectivePing;
-    if (p < 60) return 'Excellent';
+    if (p < 60)  return 'Excellent';
     if (p < 120) return 'Good';
     if (p < 200) return 'Fair';
     return 'Slow';
@@ -94,30 +94,32 @@ class VpnServer {
 
   int get bars {
     final p = effectivePing;
-    if (p < 60) return 4;
+    if (p < 60)  return 4;
     if (p < 120) return 3;
     if (p < 200) return 2;
     return 1;
   }
 
   Map<String, dynamic> toMap() => {
-    'country_name': countryName,
-    'country_code': countryCode,
-    'ip': ip,
-    'ping': ping,
-    'real_ping': realPing,
-    'ovpn_config': ovpnConfig,
-    'num_sessions': numSessions,
+    'country_name':      countryName,
+    'country_code':      countryCode,
+    'ip':                ip,
+    'ping':              ping,
+    'real_ping':         realPing,
+    'ovpn_config':       ovpnConfig,
+    'num_sessions':      numSessions,
+    'is_hard_to_block':  isHardToBlock,
   };
 
   factory VpnServer.fromMap(Map<String, dynamic> m) => VpnServer(
-    countryName: cleanCountryName(m['country_name'] ?? ''),
-    countryCode: m['country_code'] ?? '',
-    ip: m['ip'] ?? '',
-    ping: (m['ping'] as num?)?.toInt() ?? 999,
-    ovpnConfig: m['ovpn_config'] ?? '',
-    numSessions: (m['num_sessions'] as num?)?.toInt() ?? 0,
-    realPing: (m['real_ping'] as num?)?.toInt() ?? -1,
+    countryName:    cleanCountryName(m['country_name'] ?? ''),
+    countryCode:    m['country_code'] ?? '',
+    ip:             m['ip'] ?? '',
+    ping:           (m['ping'] as num?)?.toInt() ?? 999,
+    ovpnConfig:     m['ovpn_config'] ?? '',
+    numSessions:    (m['num_sessions'] as num?)?.toInt() ?? 0,
+    isHardToBlock:  m['is_hard_to_block'] == true,
+    realPing:       (m['real_ping'] as num?)?.toInt() ?? -1,
   );
 }
 
@@ -125,6 +127,33 @@ class VpnServer {
 class VpnProvider extends ChangeNotifier {
   final List<VpnServer> _servers = [];
   List<VpnServer> get servers => _servers;
+
+  // سيرفرات مفلترة حسب البلد
+  List<VpnServer> get serversForRegion {
+    if (_isRestrictedRegion) {
+      // إيران والدول المحجوبة — port 443 أولاً ثم الباقي
+      final hard   = _servers.where((s) => s.isHardToBlock).toList();
+      final normal = _servers.where((s) => !s.isHardToBlock).toList();
+      return [...hard, ...normal];
+    }
+    // دول عادية — الترتيب الافتراضي
+    return _servers;
+  }
+
+  bool _isRestrictedRegion = false;
+  bool get isRestrictedRegion => _isRestrictedRegion;
+
+  bool _antiBlockMode = false;
+  bool get antiBlockMode => _antiBlockMode;
+
+  void toggleAntiBlock() {
+    _antiBlockMode = !_antiBlockMode;
+    // لو Anti-Block شغال — افصل السيرفر الحالي
+    if (_antiBlockMode && (isConnected || isConnecting)) {
+      disconnect();
+    }
+    notifyListeners();
+  }
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -138,21 +167,20 @@ class VpnProvider extends ChangeNotifier {
   String? _serversError;
   String? get serversError => _serversError;
 
-  // ✅ إصلاح ٣: حالة واحدة واضحة
   ConnectionState _connState = ConnectionState.disconnected;
   ConnectionState get connState => _connState;
 
-  bool get isConnected => _connState == ConnectionState.connected;
+  bool get isConnected  => _connState == ConnectionState.connected;
   bool get isConnecting => _connState == ConnectionState.loading;
-  bool get isFailed => _connState == ConnectionState.failed;
+  bool get isFailed     => _connState == ConnectionState.failed;
 
   String _statusMessage = '';
   String get statusMessage => _statusMessage;
 
   String _downloadSpeed = '0 B/s';
-  String _uploadSpeed = '0 B/s';
+  String _uploadSpeed   = '0 B/s';
   String get downloadSpeed => _downloadSpeed;
-  String get uploadSpeed => _uploadSpeed;
+  String get uploadSpeed   => _uploadSpeed;
 
   Duration connectionDuration = Duration.zero;
   DateTime? _connectedAt;
@@ -162,10 +190,8 @@ class VpnProvider extends ChangeNotifier {
   OpenVPN? _vpn;
   final List<String> _trustedIps = [];
 
-  bool _userDisconnected = false;
-  bool _isSwitchingServer = false;
-
-  // ✅ إصلاح ٢: فلتر الأحداث الخاطفة
+  bool _userDisconnected   = false;
+  bool _isSwitchingServer  = false;
   Timer? _disconnectDebounce;
   VPNStage? _lastStage;
 
@@ -173,22 +199,58 @@ class VpnProvider extends ChangeNotifier {
 
   VpnProvider() {
     _initOpenVpn();
+    _detectRegion(); // اكتشف البلد عند البداية
+  }
+
+  // ─── Detect Region ────────────────────────────────────────
+  Future<void> _detectRegion() async {
+    // قائمة الدول المحجوبة
+    const restrictedCountries = {
+      'IR', // إيران
+      'CN', // الصين
+      'RU', // روسيا
+      'TR', // تركيا
+      'PK', // باكستان
+      'BD', // بنغلاديش
+      'EG', // مصر
+      'SA', // السعودية
+      'AE', // الإمارات
+      'QA', // قطر
+      'KW', // الكويت
+      'OM', // عُمان
+      'BH', // البحرين
+    };
+
+    try {
+      final res = await http.get(
+        Uri.parse('https://ip-api.com/json/?fields=countryCode'),
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200) {
+        final data       = jsonDecode(res.body);
+        final countryCode = data['countryCode'] as String? ?? '';
+        _isRestrictedRegion = restrictedCountries.contains(countryCode);
+        debugPrint('📍 البلد: $countryCode | محجوب: $_isRestrictedRegion');
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('⚠️ تعذّر اكتشاف البلد: $e');
+    }
   }
 
   // ─── Init OpenVPN ─────────────────────────────────────────
   void _initOpenVpn() {
     _vpn = OpenVPN(
       onVpnStageChanged: (stage, _) {
-        // ✅ إصلاح ٢: تجاهل نفس الحالة المتكررة
         if (stage == _lastStage) return;
         _lastStage = stage;
 
         if (stage == VPNStage.connected) {
           _disconnectDebounce?.cancel();
           _connectionTimeout?.cancel();
-          _connState = ConnectionState.connected;
+          _connState     = ConnectionState.connected;
           _statusMessage = '';
-          _triedServers.clear(); // ريست عند النجاح
+          _triedServers.clear();
 
           if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
             _trustedIps.insert(0, _selected!.ip);
@@ -197,7 +259,6 @@ class VpnProvider extends ChangeNotifier {
           _connectedAt = DateTime.now();
           _startStats();
           AdsService.showInterstitialAfterSuccess(1);
-          // ✅ أظهر إشعار مخصص
           _showNotification(
             _selected?.countryName ?? 'VPN',
             _selected?.effectivePing ?? -1,
@@ -205,8 +266,6 @@ class VpnProvider extends ChangeNotifier {
           notifyListeners();
 
         } else if (stage == VPNStage.disconnected) {
-          // ✅ إصلاح ٢: انتظر 1.5 ثانية قبل ما تعتبرها فصل حقيقي
-          // لأن المكتبة ترسل DISCONNECTED أثناء المصادقة أحياناً
           _disconnectDebounce?.cancel();
           _disconnectDebounce = Timer(
             const Duration(milliseconds: 1500),
@@ -215,11 +274,10 @@ class VpnProvider extends ChangeNotifier {
               _connectionTimeout?.cancel();
               _stopStats();
               if (_userDisconnected) {
-                _connState = ConnectionState.disconnected;
+                _connState     = ConnectionState.disconnected;
                 _statusMessage = '';
               } else if (_connState == ConnectionState.loading) {
-                // ✅ إصلاح ٤: حالة فشل صريحة ثم تجرب التالي تلقائياً
-                _connState = ConnectionState.failed;
+                _connState     = ConnectionState.failed;
                 _statusMessage = 'Trying next server...';
                 notifyListeners();
                 Timer(const Duration(seconds: 2), () {
@@ -228,21 +286,19 @@ class VpnProvider extends ChangeNotifier {
                   }
                 });
               } else {
-                _connState = ConnectionState.disconnected;
+                _connState     = ConnectionState.disconnected;
                 _statusMessage = '';
               }
               notifyListeners();
             },
           );
 
-        } else if (stage == VPNStage.connecting ||
+        } else if (stage == VPNStage.connecting   ||
                    stage == VPNStage.authenticating ||
                    stage == VPNStage.vpn_generate_config ||
                    stage == VPNStage.prepare) {
-     
-          // نغير النص فقط بدون تغيير الحالة
           _disconnectDebounce?.cancel();
-          _connState = ConnectionState.loading;
+          _connState     = ConnectionState.loading;
           _statusMessage = stage == VPNStage.authenticating
               ? 'Authenticating...'
               : 'Connecting...';
@@ -251,17 +307,17 @@ class VpnProvider extends ChangeNotifier {
       },
       onVpnStatusChanged: (status) {
         if (status != null) {
-          _downloadSpeed = formatSpeed(status.byteIn ?? '0');
-          _uploadSpeed = formatSpeed(status.byteOut ?? '0');
+          _downloadSpeed = formatSpeed(status.byteIn  ?? '0');
+          _uploadSpeed   = formatSpeed(status.byteOut ?? '0');
           notifyListeners();
         }
       },
     );
 
     _vpn!.initialize(
-      groupIdentifier: 'com.onyxvpn.onyx_vpn',
+      groupIdentifier:          'com.onyxvpn.onyx_vpn',
       providerBundleIdentifier: 'com.onyxvpn.onyx_vpn',
-      localizedDescription: 'OnyxVPN',
+      localizedDescription:     'OnyxVPN',
     );
   }
 
@@ -283,11 +339,11 @@ class VpnProvider extends ChangeNotifier {
 
     if (server.ovpnConfig.isEmpty) return;
 
-    _userDisconnected = false;
-    _lastStage = null;
-    _selected = server;
-    _connState = ConnectionState.loading;
-    _statusMessage = 'Connecting...';
+    _userDisconnected  = false;
+    _lastStage         = null;
+    _selected          = server;
+    _connState         = ConnectionState.loading;
+    _statusMessage     = 'Connecting...';
     notifyListeners();
 
     _connectionTimeout = Timer(
@@ -295,13 +351,11 @@ class VpnProvider extends ChangeNotifier {
       () {
         if (isConnecting) {
           _vpn?.disconnect();
-          _connState = ConnectionState.failed;
+          _connState     = ConnectionState.failed;
           _statusMessage = 'Trying next server...';
           notifyListeners();
           Timer(const Duration(seconds: 2), () {
-            if (_connState == ConnectionState.failed) {
-              connectFastest();
-            }
+            if (_connState == ConnectionState.failed) connectFastest();
           });
         }
       },
@@ -311,12 +365,12 @@ class VpnProvider extends ChangeNotifier {
       _vpn?.connect(
         server.ovpnConfig,
         server.countryName,
-        username: 'vpn',
-        password: 'vpn',
+        username:      'vpn',
+        password:      'vpn',
         certIsRequired: false,
       );
     } catch (_) {
-      _connState = ConnectionState.failed;
+      _connState     = ConnectionState.failed;
       _connectionTimeout?.cancel();
       _statusMessage = 'Connection failed';
       notifyListeners();
@@ -324,21 +378,21 @@ class VpnProvider extends ChangeNotifier {
   }
 
   // ─── Connect Fastest ──────────────────────────────────────
-  // يجرب السيرفرات بالترتيب حتى يتصل بواحد
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
-    final available = _servers.where((s) => s.ovpnConfig.isNotEmpty).toList();
+
+    // في الدول المحجوبة — جرب port 443 أولاً
+    final available = serversForRegion
+        .where((s) => s.ovpnConfig.isNotEmpty)
+        .toList();
+
     if (available.isEmpty) return;
 
-    // جرب الأول — وإذا فشل خلال الـ timeout راح يظهر failed
-    // المستخدم يقدر يضغط مرة ثانية يجرب التالي
-    // نختار أفضل سيرفر لم يجرّب بعد
     final untried = available
         .where((s) => !_triedServers.contains(s.ip))
         .toList();
 
     if (untried.isEmpty) {
-      // جرّب كلهم — ريست وابدأ من الأول
       _triedServers.clear();
       await connectTo(available.first);
     } else {
@@ -347,32 +401,30 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  // سيرفرات جرّبناها في هذه الجلسة
   final Set<String> _triedServers = {};
 
   // ─── Disconnect ───────────────────────────────────────────
   Future<void> disconnect() async {
-    _userDisconnected = true;
+    _userDisconnected  = true;
     _isSwitchingServer = false;
     _disconnectDebounce?.cancel();
     _connectionTimeout?.cancel();
-    _lastStage = null;
+    _lastStage         = null;
     _triedServers.clear();
 
     _vpn?.disconnect();
-    _connState = ConnectionState.disconnected;
-    _selected = null;
+    _connState     = ConnectionState.disconnected;
+    _selected      = null;
     _statusMessage = '';
     _stopStats();
-    _hideNotification(); // ✅ أخفِ الإشعار
+    _hideNotification();
     notifyListeners();
   }
 
   // ─── Measure Real Ping ────────────────────────────────────
-  // ✅ قياس الـ ping الحقيقي من الجهاز
   Future<int> _measurePing(String ip) async {
     try {
-      final start = DateTime.now();
+      final start  = DateTime.now();
       final socket = await Socket.connect(ip, 443,
           timeout: const Duration(seconds: 3));
       final ms = DateTime.now().difference(start).inMilliseconds;
@@ -380,7 +432,7 @@ class VpnProvider extends ChangeNotifier {
       return ms;
     } catch (_) {
       try {
-        final start = DateTime.now();
+        final start  = DateTime.now();
         final socket = await Socket.connect(ip, 1194,
             timeout: const Duration(seconds: 3));
         final ms = DateTime.now().difference(start).inMilliseconds;
@@ -397,7 +449,6 @@ class VpnProvider extends ChangeNotifier {
     _measuringPing = true;
     notifyListeners();
 
-    // قس الأول 20 سيرفر بالتوازي
     final batch = _servers.take(20).toList();
     final pings = await Future.wait(
       batch.map((s) => _measurePing(s.ip)),
@@ -407,9 +458,7 @@ class VpnProvider extends ChangeNotifier {
       batch[i].realPing = pings[i];
     }
 
-    // ✅ رتّب بعد القياس
     _sortServers();
-    // احفظ الـ cache مع الـ ping الجديد
     await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
 
     _measuringPing = false;
@@ -429,10 +478,10 @@ class VpnProvider extends ChangeNotifier {
 
   void _stopStats() {
     _statsTimer?.cancel();
-    _connectedAt = null;
+    _connectedAt       = null;
     connectionDuration = Duration.zero;
-    _downloadSpeed = '0 B/s';
-    _uploadSpeed = '0 B/s';
+    _downloadSpeed     = '0 B/s';
+    _uploadSpeed       = '0 B/s';
   }
 
   String get formattedTime {
@@ -453,7 +502,6 @@ class VpnProvider extends ChangeNotifier {
         _loadingServers = false;
         notifyListeners();
         if (!CacheService.isCacheValid) _backgroundRefresh();
-        // قس الـ ping بالخلفية
         measureAllPings();
         return;
       }
@@ -468,7 +516,6 @@ class VpnProvider extends ChangeNotifier {
     if (list.isNotEmpty) {
       _applyServers(list);
       await CacheService.saveServers(_servers.map((s) => s.toMap()).toList());
-      // قس الـ ping بعد التحميل
       measureAllPings();
     } else {
       _serversError = 'Could not fetch servers. Pull down to retry.';
@@ -523,7 +570,7 @@ class VpnProvider extends ChangeNotifier {
 
   // ─── Fetch Supabase ───────────────────────────────────────
   Future<List<VpnServer>> _fetchSupabase() async {
-    // ① Cloudflare Worker — يشتغل بإيران وكل الدول المحظورة
+    // ① Cloudflare Worker أولاً
     try {
       final res = await http.get(
         Uri.parse('https://vpn.akramfaeq523.workers.dev/servers'),
@@ -540,10 +587,10 @@ class VpnProvider extends ChangeNotifier {
         }
       }
     } catch (e) {
-      debugPrint('⚠️ Worker failed, trying Supabase directly: $e');
+      debugPrint('⚠️ Worker failed: $e');
     }
 
-    // ② Fallback — Supabase SDK مباشرة
+    // ② Supabase SDK
     try {
       final res = await Supabase.instance.client
           .from('servers')
@@ -557,13 +604,10 @@ class VpnProvider extends ChangeNotifier {
           .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
           .where((s) => s.ovpnConfig.isNotEmpty)
           .toList();
-      if (list.isNotEmpty) {
-        debugPrint('✅ Servers via Supabase SDK: ${list.length}');
-        return list;
-      }
+      if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // ③ Fallback — Supabase HTTP مباشرة
+    // ③ Supabase HTTP
     try {
       const url = 'https://rtobllrfgmnlsxixmfwj.supabase.co';
       const key = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ0b2JsbHJmZ21ubHN4aXhtZndqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk1MDQ1MzYsImV4cCI6MjEwNTA4MDUzNn0.5AuNxLLbHByGGBVxbvkujHJ5VhUkFbNxRCkGW3ix3Y4';
@@ -578,10 +622,7 @@ class VpnProvider extends ChangeNotifier {
             .map((r) => VpnServer.fromMap(Map<String, dynamic>.from(r)))
             .where((s) => s.ovpnConfig.isNotEmpty)
             .toList();
-        if (list.isNotEmpty) {
-          debugPrint('✅ Servers via Supabase HTTP: ${list.length}');
-          return list;
-        }
+        if (list.isNotEmpty) return list;
       }
     } catch (_) {}
 
