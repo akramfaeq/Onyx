@@ -229,7 +229,7 @@ class VpnProvider extends ChangeNotifier {
   final List<String> _trustedIps = [];
 
   static const int _timeoutSeconds = 30;
-  static const int _verifyTimeoutSeconds = 6;
+  static const int _verifyTimeoutSeconds = 12;
   static const String _verifyUrl = 'https://www.google.com/generate_204';
   Timer? _verifyTimer;
 
@@ -262,7 +262,7 @@ class VpnProvider extends ChangeNotifier {
 
       // فحص IP حقيقي - نتأكد الترافيك يمر فعلاً
       _verifyTimer?.cancel();
-      _verifyTimer = Timer(const Duration(seconds: 1), () async {
+      _verifyTimer = Timer(const Duration(seconds: 2), () async {
         final works = await _verifyConnection();
         if (!works) {
           // السيرفر اتصل بس ما يمرر بيانات → جرب التالي
@@ -399,43 +399,19 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  // ─── فحص حقيقي - نتأكد الـ IP تغير فعلاً ──────────────
+  // ─── فحص بسيط - نتأكد الترافيك يمر فعلاً ──────────────
   Future<bool> _verifyConnection() async {
-    // نفحص إن الـ IP تغير - لو الـ IP العراقي ما تغير = السيرفر ما يمرر كل الترافيك
-    const checkApis = [
-      'https://api.ipify.org?format=json',
-      'https://ipapi.co/json/',
-      'https://ip-api.com/json/?fields=countryCode,query',
-    ];
+    try {
+      final res = await http.get(
+        Uri.parse(_verifyUrl),
+        headers: {'User-Agent': 'Mozilla/5.0'},
+      ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
 
-    for (final url in checkApis) {
-      try {
-        final res = await http.get(
-          Uri.parse(url),
-          headers: {'User-Agent': 'Mozilla/5.0'},
-        ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
-
-        if (res.statusCode == 200) {
-          final json = jsonDecode(res.body) as Map<String, dynamic>;
-          final country = (json['country_code'] ?? json['countryCode'] ?? '').toString().toUpperCase();
-          final ip = (json['ip'] ?? json['query'] ?? '').toString();
-
-          debugPrint('VPN IP: $ip | Country: $country');
-
-          // لو الدولة تغيرت = VPN يشتغل صح ✅
-          if (country.isNotEmpty && country != GeoService.userCountryCode) {
-            return true;
-          }
-          // لو ما عرفنا دولة المستخدم = نقبل أي IP
-          if (GeoService.userCountryCode.isEmpty || GeoService.userCountryCode == 'UN') {
-            return ip.isNotEmpty;
-          }
-        }
-      } catch (_) {
-        continue;
-      }
+      debugPrint('Verify status: ${res.statusCode}');
+      return res.statusCode == 204 || res.statusCode == 200;
+    } catch (_) {
+      return false;
     }
-    return false;
   }
 
   // ─── Smart Connect - يختار أسرع سيرفر تلقائياً ──────────
