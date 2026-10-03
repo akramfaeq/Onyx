@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_v2ray/flutter_v2ray.dart';
+import 'package:flutter_v2ray_client/flutter_v2ray.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
@@ -157,7 +157,7 @@ class VpnProvider extends ChangeNotifier {
   Timer? _connectionTimeout;
   Timer? _disconnectDebounce;
 
-  late final FlutterV2ray _v2ray = FlutterV2ray(
+  late final V2ray _v2ray = V2ray(
     onStatusChanged: _onV2RayStatus,
   );
 
@@ -174,9 +174,11 @@ class VpnProvider extends ChangeNotifier {
   }
 
   Future<void> _initV2Ray() async {
-    await _v2ray.initializeV2Ray(
+    await _v2ray.initialize(
       notificationIconResourceType: 'drawable',
       notificationIconResourceName: 'ic_vpn_notification',
+      providerBundleIdentifier: 'dev.amirzr.flutterV2rayMobile',
+      groupIdentifier: 'group.dev.amirzr.flutterV2rayMobile',
     );
     _v2rayInitialized = true;
   }
@@ -190,8 +192,8 @@ class VpnProvider extends ChangeNotifier {
       _connState     = ConnectionState.connected;
       _statusMessage = '';
       _triedServers.clear();
-      _downloadSpeed = formatSpeed(status.download);
-      _uploadSpeed   = formatSpeed(status.upload);
+      _downloadSpeed = formatSpeed(status.downloadSpeed);
+      _uploadSpeed   = formatSpeed(status.uploadSpeed);
 
       if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
         _trustedIps.insert(0, _selected!.ip);
@@ -234,8 +236,8 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
 
     } else {
-      _downloadSpeed = formatSpeed(status.download);
-      _uploadSpeed   = formatSpeed(status.upload);
+      _downloadSpeed = formatSpeed(status.downloadSpeed);
+      _uploadSpeed   = formatSpeed(status.uploadSpeed);
       notifyListeners();
     }
   }
@@ -287,13 +289,7 @@ class VpnProvider extends ChangeNotifier {
     });
 
     try {
-      final parsed = FlutterV2ray.parseFromURL(server.config);
-
-      // DNS الصحيح — يعدّل على الـ parser مباشرة
-      parsed.dns = {
-        "servers": ["1.1.1.1", "8.8.8.8"],
-      };
-
+      final parsed = V2ray.parseFromURL(server.config);
       await _v2ray.startV2Ray(
         remark:          server.countryName,
         config:          parsed.getFullConfiguration(),
@@ -343,8 +339,8 @@ class VpnProvider extends ChangeNotifier {
 
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final parsed = FlutterV2ray.parseFromURL(server.config);
-      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration());
+      final parsed = V2ray.parseFromURL(server.config);
+      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration() );
     } catch (_) { return 9999; }
   }
 
@@ -522,7 +518,7 @@ class VpnProvider extends ChangeNotifier {
 
     for (final configStr in allConfigs) {
       try {
-        final parsed = FlutterV2ray.parseFromURL(configStr);
+        final parsed = V2ray.parseFromURL(configStr);
         final ip     = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
