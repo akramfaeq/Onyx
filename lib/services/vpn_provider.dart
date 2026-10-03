@@ -218,7 +218,7 @@ class VpnProvider extends ChangeNotifier {
   Timer? _connectionTimeout;
   Timer? _disconnectDebounce;
 
-  late final FlutterV2ray _v2ray = FlutterV2ray(
+  late final V2ray _v2ray = V2ray(
     onStatusChanged: _onV2RayStatus,
   );
 
@@ -240,7 +240,7 @@ class VpnProvider extends ChangeNotifier {
   }
 
   Future<void> _initV2Ray() async {
-    await _v2ray.initializeV2Ray(
+    await _v2ray.initialize(
       notificationIconResourceType: 'drawable',
       notificationIconResourceName: 'ic_vpn_notification',
     );
@@ -353,7 +353,7 @@ class VpnProvider extends ChangeNotifier {
     });
 
     try {
-      final parsed    = FlutterV2ray.parseFromURL(server.config);
+      final parsed    = V2ray.parseFromURL(server.config);
       final fullConfig = _buildConfig(parsed, server);
       await _v2ray.startV2Ray(
         remark:          server.countryName,
@@ -415,7 +415,7 @@ class VpnProvider extends ChangeNotifier {
 
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final parsed = FlutterV2ray.parseFromURL(server.config);
+      final parsed = V2ray.parseFromURL(server.config);
       return await _v2ray.getServerDelay(config: parsed.getFullConfiguration());
     } catch (_) { return 9999; }
   }
@@ -668,7 +668,7 @@ class VpnProvider extends ChangeNotifier {
 
     for (final configStr in orderedConfigs) {
       try {
-        final parsed   = FlutterV2ray.parseFromURL(configStr);
+        final parsed   = V2ray.parseFromURL(configStr);
         final ip       = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
