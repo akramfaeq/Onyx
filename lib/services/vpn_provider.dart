@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter_v2ray_client/flutter_v2ray.dart';
+import 'package:flutter_v2ray/flutter_v2ray.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'ads_service.dart';
 import 'cache_service.dart';
@@ -157,7 +157,7 @@ class VpnProvider extends ChangeNotifier {
   Timer? _connectionTimeout;
   Timer? _disconnectDebounce;
 
-  late final V2ray _v2ray = V2ray(
+  late final FlutterV2ray _v2ray = FlutterV2ray(
     onStatusChanged: _onV2RayStatus,
   );
 
@@ -174,11 +174,9 @@ class VpnProvider extends ChangeNotifier {
   }
 
   Future<void> _initV2Ray() async {
-    await _v2ray.initialize(
+    await _v2ray.initializeV2Ray(
       notificationIconResourceType: 'drawable',
       notificationIconResourceName: 'ic_vpn_notification',
-      providerBundleIdentifier: 'dev.amirzr.flutterV2rayMobile',
-      groupIdentifier: 'group.dev.amirzr.flutterV2rayMobile',
     );
     _v2rayInitialized = true;
   }
@@ -192,8 +190,8 @@ class VpnProvider extends ChangeNotifier {
       _connState     = ConnectionState.connected;
       _statusMessage = '';
       _triedServers.clear();
-      _downloadSpeed = formatSpeed(status.downloadSpeed);
-      _uploadSpeed   = formatSpeed(status.uploadSpeed);
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
 
       if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
         _trustedIps.insert(0, _selected!.ip);
@@ -236,8 +234,8 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
 
     } else {
-      _downloadSpeed = formatSpeed(status.downloadSpeed);
-      _uploadSpeed   = formatSpeed(status.uploadSpeed);
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
       notifyListeners();
     }
   }
@@ -289,10 +287,11 @@ class VpnProvider extends ChangeNotifier {
     });
 
     try {
-      final parsed = V2ray.parseFromURL(server.config);
+      final parsed = FlutterFlutterV2ray.parseFromURL(server.config);
+      final fullConfig = _injectDns(parsed.getFullConfiguration());
       await _v2ray.startV2Ray(
         remark:          server.countryName,
-        config:          parsed.getFullConfiguration(),
+        config:          fullConfig,
         blockedApps:     null,
         bypassSubnets:   null,
         proxyOnly:       false,
@@ -339,8 +338,8 @@ class VpnProvider extends ChangeNotifier {
 
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final parsed = V2ray.parseFromURL(server.config);
-      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration() );
+      final parsed = FlutterFlutterV2ray.parseFromURL(server.config);
+      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration());
     } catch (_) { return 9999; }
   }
 
@@ -518,7 +517,7 @@ class VpnProvider extends ChangeNotifier {
 
     for (final configStr in allConfigs) {
       try {
-        final parsed = V2ray.parseFromURL(configStr);
+        final parsed = FlutterFlutterV2ray.parseFromURL(configStr);
         final ip     = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
@@ -558,6 +557,35 @@ class VpnProvider extends ChangeNotifier {
     if (r.contains('FI') || r.contains('FINLAND')) return 'FI';
     if (r.contains('SE') || r.contains('SWEDEN')) return 'SE';
     return 'UN';
+  }
+
+  // ─── inject DNS + routing ─────────────────────────────────
+  String _injectDns(String configJson) {
+    try {
+      final map = jsonDecode(configJson) as Map<String, dynamic>;
+
+      // DNS
+      map['dns'] = {
+        "servers": ["1.1.1.1", "8.8.8.8", "8.8.4.4"],
+        "queryStrategy": "UseIPv4",
+      };
+
+      // Routing — تأكد كل الترافيك يمر خلال الـ proxy
+      map['routing'] = {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+          {
+            "type": "field",
+            "outboundTag": "proxy",
+            "network": "tcp,udp",
+          }
+        ],
+      };
+
+      return jsonEncode(map);
+    } catch (_) {
+      return configJson;
+    }
   }
 
   @override
