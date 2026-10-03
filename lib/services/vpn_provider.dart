@@ -287,7 +287,7 @@ class VpnProvider extends ChangeNotifier {
     });
 
     try {
-      final parsed = FlutterFlutterV2ray.parseFromURL(server.config);
+      final parsed = FlutterV2ray.parseFromURL(server.config);
       final fullConfig = _injectDns(parsed.getFullConfiguration());
       await _v2ray.startV2Ray(
         remark:          server.countryName,
@@ -338,7 +338,7 @@ class VpnProvider extends ChangeNotifier {
 
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final parsed = FlutterFlutterV2ray.parseFromURL(server.config);
+      final parsed = FlutterV2ray.parseFromURL(server.config);
       return await _v2ray.getServerDelay(config: parsed.getFullConfiguration());
     } catch (_) { return 9999; }
   }
@@ -517,7 +517,7 @@ class VpnProvider extends ChangeNotifier {
 
     for (final configStr in allConfigs) {
       try {
-        final parsed = FlutterFlutterV2ray.parseFromURL(configStr);
+        final parsed = FlutterV2ray.parseFromURL(configStr);
         final ip     = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
