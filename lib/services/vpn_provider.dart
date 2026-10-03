@@ -399,17 +399,43 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  // ─── فحص IP حقيقي - نتأكد الترافيك يمر ─────────────────
+  // ─── فحص حقيقي - نتأكد الـ IP تغير فعلاً ──────────────
   Future<bool> _verifyConnection() async {
-    try {
-      final res = await http.get(
-        Uri.parse(_verifyUrl),
-        headers: {'User-Agent': 'Mozilla/5.0'},
-      ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
-      return res.statusCode == 204 || res.statusCode == 200;
-    } catch (_) {
-      return false;
+    // نفحص إن الـ IP تغير - لو الـ IP العراقي ما تغير = السيرفر ما يمرر كل الترافيك
+    const checkApis = [
+      'https://api.ipify.org?format=json',
+      'https://ipapi.co/json/',
+      'https://ip-api.com/json/?fields=countryCode,query',
+    ];
+
+    for (final url in checkApis) {
+      try {
+        final res = await http.get(
+          Uri.parse(url),
+          headers: {'User-Agent': 'Mozilla/5.0'},
+        ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
+
+        if (res.statusCode == 200) {
+          final json = jsonDecode(res.body) as Map<String, dynamic>;
+          final country = (json['country_code'] ?? json['countryCode'] ?? '').toString().toUpperCase();
+          final ip = (json['ip'] ?? json['query'] ?? '').toString();
+
+          debugPrint('VPN IP: $ip | Country: $country');
+
+          // لو الدولة تغيرت = VPN يشتغل صح ✅
+          if (country.isNotEmpty && country != GeoService.userCountryCode) {
+            return true;
+          }
+          // لو ما عرفنا دولة المستخدم = نقبل أي IP
+          if (GeoService.userCountryCode.isEmpty || GeoService.userCountryCode == 'UN') {
+            return ip.isNotEmpty;
+          }
+        }
+      } catch (_) {
+        continue;
+      }
     }
+    return false;
   }
 
   // ─── Smart Connect - يختار أسرع سيرفر تلقائياً ──────────
