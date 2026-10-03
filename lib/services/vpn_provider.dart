@@ -21,12 +21,10 @@ Future<void> _hideNotification() async {
 String cleanCountryName(String raw) =>
     raw.replaceAll(RegExp(r'\s*\(.*?\)'), '').trim();
 
-// flutter_v2ray يرجع String للسرعة
 String formatSpeed(dynamic raw) {
   if (raw == null) return '0 B/s';
   final s = raw.toString().trim();
   if (s.isEmpty || s == '0') return '0 B/s';
-  // لو رجع رقم int أو double
   final n = double.tryParse(s.replaceAll(RegExp(r'[^0-9.]'), ''));
   if (n == null || n == 0) return s.contains('/') ? s : '0 B/s';
   if (n >= 1024 * 1024) return '${(n / (1024 * 1024)).toStringAsFixed(1)} MB/s';
@@ -107,7 +105,6 @@ class VpnServer {
     countryCode:    m['country_code'] ?? '',
     ip:             m['ip'] ?? '',
     ping:           (m['ping'] as num?)?.toInt() ?? 999,
-    // Supabase يخزن الـ config بعمود ovpn_config
     config:         m['config'] ?? m['ovpn_config'] ?? '',
     protocol:       m['protocol'] ?? 'vless',
     numSessions:    (m['num_sessions'] as num?)?.toInt() ?? 0,
@@ -116,13 +113,77 @@ class VpnServer {
   );
 }
 
+// ─── نظام اكتشاف الدولة بالـ IP ──────────────────────────────
+class GeoService {
+  static String _userCountryCode = '';
+  static String get userCountryCode => _userCountryCode;
+
+  // قائمة APIs لمعرفة دولة المستخدم - نجرب واحد واحد
+  static const _geoApis = [
+    'https://ipapi.co/json/',
+    'https://ip-api.com/json/?fields=countryCode',
+    'https://ipinfo.io/json',
+  ];
+
+  static Future<String> detectCountry() async {
+    if (_userCountryCode.isNotEmpty) return _userCountryCode;
+
+    for (final url in _geoApis) {
+      try {
+        final res = await http.get(
+          Uri.parse(url),
+          headers: {'User-Agent': 'Mozilla/5.0'},
+        ).timeout(const Duration(seconds: 5));
+
+        if (res.statusCode == 200) {
+          final json = jsonDecode(res.body) as Map<String, dynamic>;
+          // كل API عندها مفتاح مختلف
+          final code = json['country_code'] ??
+                       json['countryCode'] ??
+                       json['country'] ?? '';
+          if (code.toString().length == 2) {
+            _userCountryCode = code.toString().toUpperCase();
+            debugPrint('🌍 User country detected: $_userCountryCode');
+            return _userCountryCode;
+          }
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+
+    // fallback لو كل APIs فشلت
+    _userCountryCode = 'UN';
+    return _userCountryCode;
+  }
+
+  // الدول اللي تحتاج سيرفرات خاصة (محجوبة بشدة)
+  static const _restrictedCountries = {
+    'IR', // إيران
+    'CN', // الصين
+    'RU', // روسيا
+    'TR', // تركيا
+    'SA', // السعودية
+    'AE', // الإمارات
+    'EG', // مصر
+    'PK', // باكستان
+  };
+
+  static bool get isRestrictedCountry =>
+      _restrictedCountries.contains(_userCountryCode);
+}
+
 class VpnProvider extends ChangeNotifier {
   final List<VpnServer> _servers = [];
   List<VpnServer> get servers => _servers;
 
-  // السيرفرات المفلترة للعرض
   List<VpnServer> get serversPort443 => _servers.where((s) => s.isHardToBlock).toList();
   List<VpnServer> get serversFast    => _servers.where((s) => s.effectivePing < 120).toList();
+
+  // دولة المستخدم
+  String _userCountry = '';
+  String get userCountry => _userCountry;
+  bool get isRestrictedUser => GeoService.isRestrictedCountry;
 
   VpnServer? _selected;
   VpnServer? get selectedServer => _selected;
@@ -157,7 +218,7 @@ class VpnProvider extends ChangeNotifier {
   Timer? _connectionTimeout;
   Timer? _disconnectDebounce;
 
-  late final V2ray _v2ray = V2ray(
+  late final FlutterV2ray _v2ray = FlutterV2ray(
     onStatusChanged: _onV2RayStatus,
   );
 
@@ -171,14 +232,17 @@ class VpnProvider extends ChangeNotifier {
 
   VpnProvider() {
     _initV2Ray();
+    // نكتشف الدولة في الخلفية
+    GeoService.detectCountry().then((code) {
+      _userCountry = code;
+      notifyListeners();
+    });
   }
 
   Future<void> _initV2Ray() async {
-    await _v2ray.initialize(
+    await _v2ray.initializeV2Ray(
       notificationIconResourceType: 'drawable',
       notificationIconResourceName: 'ic_vpn_notification',
-      providerBundleIdentifier: 'dev.amirzr.flutterV2rayMobile',
-      groupIdentifier: 'group.dev.amirzr.flutterV2rayMobile',
     );
     _v2rayInitialized = true;
   }
@@ -192,8 +256,8 @@ class VpnProvider extends ChangeNotifier {
       _connState     = ConnectionState.connected;
       _statusMessage = '';
       _triedServers.clear();
-      _downloadSpeed = formatSpeed(status.downloadSpeed);
-      _uploadSpeed   = formatSpeed(status.uploadSpeed);
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
 
       if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
         _trustedIps.insert(0, _selected!.ip);
@@ -236,8 +300,8 @@ class VpnProvider extends ChangeNotifier {
       notifyListeners();
 
     } else {
-      _downloadSpeed = formatSpeed(status.downloadSpeed);
-      _uploadSpeed   = formatSpeed(status.uploadSpeed);
+      _downloadSpeed = formatSpeed(status.download);
+      _uploadSpeed   = formatSpeed(status.upload);
       notifyListeners();
     }
   }
@@ -289,10 +353,11 @@ class VpnProvider extends ChangeNotifier {
     });
 
     try {
-      final parsed = V2ray.parseFromURL(server.config);
+      final parsed    = FlutterV2ray.parseFromURL(server.config);
+      final fullConfig = _buildConfig(parsed, server);
       await _v2ray.startV2Ray(
         remark:          server.countryName,
-        config:          parsed.getFullConfiguration(),
+        config:          fullConfig,
         blockedApps:     null,
         bypassSubnets:   null,
         proxyOnly:       false,
@@ -309,7 +374,18 @@ class VpnProvider extends ChangeNotifier {
 
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
-    final available = _servers.where((s) => s.config.isNotEmpty).toList();
+
+    // لو المستخدم من دولة محجوبة → نعطي أولوية لسيرفرات TLS/Reality
+    List<VpnServer> available;
+    if (GeoService.isRestrictedCountry) {
+      available = _servers.where((s) => s.config.isNotEmpty && s.isHardToBlock).toList();
+      if (available.isEmpty) {
+        available = _servers.where((s) => s.config.isNotEmpty).toList();
+      }
+    } else {
+      available = _servers.where((s) => s.config.isNotEmpty).toList();
+    }
+
     if (available.isEmpty) return;
 
     final untried = available.where((s) => !_triedServers.contains(s.ip)).toList();
@@ -339,8 +415,8 @@ class VpnProvider extends ChangeNotifier {
 
   Future<int> _measurePing(VpnServer server) async {
     try {
-      final parsed = V2ray.parseFromURL(server.config);
-      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration() );
+      final parsed = FlutterV2ray.parseFromURL(server.config);
+      return await _v2ray.getServerDelay(config: parsed.getFullConfiguration());
     } catch (_) { return 9999; }
   }
 
@@ -452,10 +528,18 @@ class VpnProvider extends ChangeNotifier {
 
   void _sortServers() {
     _servers.sort((a, b) {
+      // السيرفرات المجربة وشغلت قبل - أولوية أولى
       final aTrusted = _trustedIps.contains(a.ip);
       final bTrusted = _trustedIps.contains(b.ip);
       if (aTrusted && !bTrusted) return -1;
       if (!aTrusted && bTrusted) return 1;
+
+      // لو المستخدم من دولة محجوبة → سيرفرات TLS/Reality أولاً
+      if (GeoService.isRestrictedCountry) {
+        if (a.isHardToBlock && !b.isHardToBlock) return -1;
+        if (!a.isHardToBlock && b.isHardToBlock) return 1;
+      }
+
       return a.score.compareTo(b.score);
     });
   }
@@ -476,38 +560,92 @@ class VpnProvider extends ChangeNotifier {
       if (list.isNotEmpty) return list;
     } catch (_) {}
 
-    // ② GitHub مباشرة
+    // ② GitHub
     return await _fetchFromGitHub();
   }
 
+  // ─── المصادر - نفس مصادر Hiddify + الأقوى لإيران ─────────
   static const _githubSources = [
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt',
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt',
-    'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/fast/configs.txt',
-    'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub1.txt',
-    'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub2.txt',
+    // ① yebekhe/TelegramV2rayCollector - نفس المصدر اللي يستخدمه Hiddify
+    // جامع من قنوات تليغرام، محدث كل ساعة
+    {
+      'url': 'https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/normal/mix',
+      'priority': 1,
+      'encoded': false,
+    },
+    {
+      'url': 'https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/base64/mix',
+      'priority': 1,
+      'encoded': true,
+    },
+    // ② soroushmirzaei - جامع تليغرام آخر قوي، Reality متخصص
+    {
+      'url': 'https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality',
+      'priority': 1,
+      'encoded': false,
+    },
+    {
+      'url': 'https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/mixed',
+      'priority': 1,
+      'encoded': false,
+    },
+    // ③ 0xRadikal - محدث كل 15 دقيقة من تليغرام
+    {
+      'url': 'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt',
+      'priority': 2,
+      'encoded': false,
+    },
+    {
+      'url': 'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/verified/configs.txt',
+      'priority': 2,
+      'encoded': false,
+    },
+    // ④ barry-far - vless فقط (أقوى لإيران)
+    {
+      'url': 'https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Splitted-By-Protocol/vless.txt',
+      'priority': 2,
+      'encoded': false,
+    },
+    // ⑤ احتياطي
+    {
+      'url': 'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub1.txt',
+      'priority': 3,
+      'encoded': true,
+    },
   ];
 
   Future<List<VpnServer>> _fetchFromGitHub() async {
+    // لو دولة محجوبة → نجيب Priority 1 أولاً بالتوازي
+    final isRestricted = GeoService.isRestrictedCountry;
+    final sources = isRestricted
+        ? _githubSources // كل المصادر لكن Priority 1 أهم
+        : _githubSources;
+
     final allConfigs = <String>[];
 
-    for (final url in _githubSources) {
-      try {
-        final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10));
-        if (res.statusCode != 200) continue;
+    // نجيب Priority 1 أولاً بالتوازي
+    final p1Sources = sources.where((s) => s['priority'] == 1).toList();
+    final p1Results = await Future.wait(
+      p1Sources.map((s) => _fetchSource(
+        s['url'] as String,
+        encoded: s['encoded'] as bool? ?? false,
+      )),
+    );
+    for (final configs in p1Results) {
+      allConfigs.addAll(configs);
+    }
 
-        String body = res.body;
-        if (!body.contains('://')) {
-          try { body = utf8.decode(base64.decode(body.trim())); } catch (_) {}
-        }
-
-        final lines = body.split('\n').map((l) => l.trim()).where((l) =>
-            l.startsWith('vless://') || l.startsWith('vmess://') ||
-            l.startsWith('trojan://') || l.startsWith('ss://')).toList();
-
-        allConfigs.addAll(lines);
+    // لو ما وصلنا 50 كونفيغ → نجيب البقية
+    if (allConfigs.length < 50) {
+      final p2Sources = sources.where((s) => (s['priority'] as int) > 1).toList();
+      for (final source in p2Sources) {
+        final configs = await _fetchSource(
+          source['url'] as String,
+          encoded: source['encoded'] as bool? ?? false,
+        );
+        allConfigs.addAll(configs);
         if (allConfigs.length >= 200) break;
-      } catch (_) {}
+      }
     }
 
     if (allConfigs.isEmpty) return [];
@@ -516,24 +654,37 @@ class VpnProvider extends ChangeNotifier {
     final seen    = <String>{};
     final rng     = Random();
 
-    for (final configStr in allConfigs) {
+    // لو دولة محجوبة → نفلتر Reality + TLS أولاً
+    List<String> orderedConfigs = allConfigs;
+    if (isRestricted) {
+      final realityFirst = allConfigs
+          .where((c) => c.contains('reality') || c.contains(':443'))
+          .toList();
+      final rest = allConfigs
+          .where((c) => !c.contains('reality') && !c.contains(':443'))
+          .toList();
+      orderedConfigs = [...realityFirst, ...rest];
+    }
+
+    for (final configStr in orderedConfigs) {
       try {
-        final parsed = V2ray.parseFromURL(configStr);
-        final ip     = parsed.address;
+        final parsed   = FlutterV2ray.parseFromURL(configStr);
+        final ip       = parsed.address;
         if (ip.isEmpty || seen.contains(ip)) continue;
         seen.add(ip);
 
-        final protocol = configStr.split('://').first.toLowerCase();
-        final isTls    = configStr.contains('tls') || configStr.contains(':443');
+        final protocol   = configStr.split('://').first.toLowerCase();
+        final isReality  = configStr.contains('reality');
+        final isTls      = configStr.contains('tls') || configStr.contains(':443') || isReality;
 
         servers.add(VpnServer(
-          countryName:    parsed.remark.isNotEmpty ? parsed.remark : 'Unknown',
-          countryCode:    _guessCountryCode(parsed.remark),
-          ip:             ip,
-          ping:           rng.nextInt(150) + 50,
-          config:         configStr,
-          protocol:       protocol,
-          isHardToBlock:  isTls,
+          countryName:   parsed.remark.isNotEmpty ? parsed.remark : 'Unknown',
+          countryCode:   _guessCountryCode(parsed.remark),
+          ip:            ip,
+          ping:          rng.nextInt(150) + 50,
+          config:        configStr,
+          protocol:      protocol,
+          isHardToBlock: isTls,
         ));
 
         if (servers.length >= 80) break;
@@ -543,21 +694,175 @@ class VpnProvider extends ChangeNotifier {
     return servers;
   }
 
+  Future<List<String>> _fetchSource(String url, {bool encoded = false}) async {
+    try {
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {'User-Agent': 'Mozilla/5.0'},
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode != 200) return [];
+
+      String body = res.body.trim();
+
+      // لو الملف base64 صريح أو ما فيه :// → نفك الـ base64
+      if (encoded || !body.contains('://')) {
+        try {
+          // نضيف padding لو ناقص
+          final padded = body + '=' * ((4 - body.length % 4) % 4);
+          body = utf8.decode(base64.decode(padded));
+        } catch (_) {}
+      }
+
+      return body.split('\n').map((l) => l.trim()).where((l) =>
+          l.startsWith('vless://') || l.startsWith('vmess://') ||
+          l.startsWith('trojan://') || l.startsWith('ss://') ||
+          l.startsWith('hysteria2://') || l.startsWith('tuic://')).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
   String _guessCountryCode(String remark) {
     final r = remark.toUpperCase();
     if (r.contains('US') || r.contains('UNITED STATES')) return 'US';
-    if (r.contains('DE') || r.contains('GERMANY')) return 'DE';
-    if (r.contains('NL') || r.contains('NETHERLANDS')) return 'NL';
-    if (r.contains('FR') || r.contains('FRANCE')) return 'FR';
-    if (r.contains('GB') || r.contains('UK')) return 'GB';
-    if (r.contains('JP') || r.contains('JAPAN')) return 'JP';
-    if (r.contains('SG') || r.contains('SINGAPORE')) return 'SG';
-    if (r.contains('TR') || r.contains('TURKEY')) return 'TR';
-    if (r.contains('CA') || r.contains('CANADA')) return 'CA';
-    if (r.contains('AU') || r.contains('AUSTRALIA')) return 'AU';
-    if (r.contains('FI') || r.contains('FINLAND')) return 'FI';
-    if (r.contains('SE') || r.contains('SWEDEN')) return 'SE';
+    if (r.contains('DE') || r.contains('GERMANY'))       return 'DE';
+    if (r.contains('NL') || r.contains('NETHERLANDS'))   return 'NL';
+    if (r.contains('FR') || r.contains('FRANCE'))        return 'FR';
+    if (r.contains('GB') || r.contains('UK'))            return 'GB';
+    if (r.contains('JP') || r.contains('JAPAN'))         return 'JP';
+    if (r.contains('SG') || r.contains('SINGAPORE'))     return 'SG';
+    if (r.contains('TR') || r.contains('TURKEY'))        return 'TR';
+    if (r.contains('CA') || r.contains('CANADA'))        return 'CA';
+    if (r.contains('AU') || r.contains('AUSTRALIA'))     return 'AU';
+    if (r.contains('FI') || r.contains('FINLAND'))       return 'FI';
+    if (r.contains('SE') || r.contains('SWEDEN'))        return 'SE';
+    if (r.contains('NO') || r.contains('NORWAY'))        return 'NO';
+    if (r.contains('CH') || r.contains('SWITZERLAND'))   return 'CH';
+    if (r.contains('KR') || r.contains('KOREA'))         return 'KR';
+    if (r.contains('HK') || r.contains('HONG KONG'))     return 'HK';
+    if (r.contains('IR') || r.contains('IRAN'))          return 'IR';
     return 'UN';
+  }
+
+  // ─── بناء الـ config الصح مع DNS وRouting مناسب ───────────
+  String _buildConfig(V2RayURL parsed, VpnServer server) {
+    try {
+      final map = jsonDecode(parsed.getFullConfiguration()) as Map<String, dynamic>;
+
+      // ① DNS - نستخدم Cloudflare + Google
+      // لو دولة محجوبة → نضيف DoH (DNS over HTTPS) عشان ما يحجبوا الـ DNS
+      if (GeoService.isRestrictedCountry) {
+        map['dns'] = {
+          'servers': [
+            {
+              'address': 'https://1.1.1.1/dns-query',
+              'domains': ['full:'],
+            },
+            '8.8.8.8',
+            '1.1.1.1',
+          ],
+          'queryStrategy': 'UseIPv4',
+        };
+      } else {
+        map['dns'] = {
+          'servers': ['1.1.1.1', '8.8.8.8', '8.8.4.4'],
+          'queryStrategy': 'UseIPv4',
+        };
+      }
+
+      // ② Routing - كل الترافيك يمر عبر الـ proxy
+      map['routing'] = {
+        'domainStrategy': 'IPIfNonMatch',
+        'rules': [
+          // منع الـ DNS leak
+          {
+            'type': 'field',
+            'inboundTag': ['dns-in'],
+            'outboundTag': 'proxy',
+          },
+          // كل شيء ثاني عبر الـ proxy
+          {
+            'type': 'field',
+            'outboundTag': 'proxy',
+            'network': 'tcp,udp',
+          },
+        ],
+      };
+
+      // ③ Inbounds - نضيف SOCKS5 + HTTP
+      final inbounds = map['inbounds'] as List? ?? [];
+      // نتأكد الـ inbounds موجودة وصح
+      if (inbounds.isEmpty) {
+        map['inbounds'] = [
+          {
+            'tag': 'socks',
+            'port': 10808,
+            'listen': '127.0.0.1',
+            'protocol': 'socks',
+            'sniffing': {
+              'enabled': true,
+              'destOverride': ['http', 'tls'],
+            },
+            'settings': {
+              'auth': 'noauth',
+              'udp': true,
+            },
+          },
+          {
+            'tag': 'http',
+            'port': 10809,
+            'listen': '127.0.0.1',
+            'protocol': 'http',
+            'sniffing': {
+              'enabled': true,
+              'destOverride': ['http', 'tls'],
+            },
+          },
+        ];
+      } else {
+        // نفعّل sniffing على كل الـ inbounds الموجودة
+        for (final inbound in inbounds) {
+          if (inbound is Map) {
+            inbound['sniffing'] = {
+              'enabled': true,
+              'destOverride': ['http', 'tls'],
+            };
+          }
+        }
+        map['inbounds'] = inbounds;
+      }
+
+      return jsonEncode(map);
+    } catch (e) {
+      debugPrint('Config build error: $e');
+      // fallback للطريقة القديمة
+      return _injectDnsFallback(parsed.getFullConfiguration());
+    }
+  }
+
+  // fallback بسيط لو فشل الـ buildConfig
+  String _injectDnsFallback(String configJson) {
+    try {
+      final map = jsonDecode(configJson) as Map<String, dynamic>;
+      map['dns'] = {
+        'servers': ['1.1.1.1', '8.8.8.8'],
+        'queryStrategy': 'UseIPv4',
+      };
+      map['routing'] = {
+        'domainStrategy': 'IPIfNonMatch',
+        'rules': [
+          {
+            'type': 'field',
+            'outboundTag': 'proxy',
+            'network': 'tcp,udp',
+          }
+        ],
+      };
+      return jsonEncode(map);
+    } catch (_) {
+      return configJson;
+    }
   }
 
   @override

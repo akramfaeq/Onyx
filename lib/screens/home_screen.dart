@@ -67,23 +67,86 @@ class _TopBar extends StatelessWidget {
               ]),
             ),
           ),
-          GestureDetector(
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const InfoScreen())),
-            child: Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: const Color(0xFF12121E),
-                borderRadius: BorderRadius.circular(12),
+          Row(
+            children: [
+              // بادج الدولة / Iran Mode
+              Consumer<VpnProvider>(
+                builder: (_, vpn, __) {
+                  if (vpn.userCountry.isEmpty) return const SizedBox.shrink();
+                  final isRestricted = vpn.isRestrictedUser;
+                  return Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: isRestricted
+                          ? const Color(0xFFEF4444).withValues(alpha: 0.12)
+                          : const Color(0xFF10B981).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: isRestricted
+                            ? const Color(0xFFEF4444).withValues(alpha: 0.4)
+                            : const Color(0xFF10B981).withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (isRestricted) ...[
+                          const Icon(Icons.shield_rounded,
+                              size: 11, color: Color(0xFFEF4444)),
+                          const SizedBox(width: 3),
+                          const Text(
+                            'Bypass Mode',
+                            style: TextStyle(
+                                color: Color(0xFFEF4444),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700),
+                          ),
+                        ] else ...[
+                          Text(
+                            _countryFlag(vpn.userCountry),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            vpn.userCountry,
+                            style: const TextStyle(
+                                color: Color(0xFF10B981),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600),
+                          ),
+                        ],
+                      ],
+                    ),
+                  );
+                },
               ),
-              child: const Icon(Icons.info_outline_rounded,
-                  color: Color(0xFF7B5CF0), size: 18),
-            ),
+              GestureDetector(
+                onTap: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const InfoScreen())),
+                child: Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF12121E),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Icon(Icons.info_outline_rounded,
+                      color: Color(0xFF7B5CF0), size: 18),
+                ),
+              ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  String _countryFlag(String code) {
+    if (code.length != 2) return '🌐';
+    return code.toUpperCase().split('').map(
+      (c) => String.fromCharCode(c.codeUnitAt(0) + 127397),
+    ).join();
   }
 }
 
@@ -425,7 +488,8 @@ class _ServersPanelState extends State<_ServersPanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const SizedBox(height: 4),
-          // ── بادجات الفلتر ──────────────────────────────────
+
+          // ── بادجات الفلتر مع إضافة Bypass لو دولة محجوبة ──
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Row(
@@ -439,10 +503,15 @@ class _ServersPanelState extends State<_ServersPanel> {
                 ),
                 const SizedBox(width: 8),
                 _FilterBadge(
-                  label: 'Port 443',
-                  icon: Icons.lock_outline_rounded,
+                  // لو دولة محجوبة → نسميه "Bypass" بدل "Port 443"
+                  label: vpn.isRestrictedUser ? 'Bypass' : 'Port 443',
+                  icon: vpn.isRestrictedUser
+                      ? Icons.shield_rounded
+                      : Icons.lock_outline_rounded,
                   active: _filter == _ServerFilter.port443,
-                  activeColor: const Color(0xFF1D9E75),
+                  activeColor: vpn.isRestrictedUser
+                      ? const Color(0xFFEF4444)
+                      : const Color(0xFF1D9E75),
                   onTap: () =>
                       setState(() => _filter = _ServerFilter.port443),
                 ),
@@ -480,7 +549,6 @@ class _ServersPanelState extends State<_ServersPanel> {
                             ),
                           );
                         }
-                        // نأخذ أول 8 سيرفرات من الفلتر الحالي
                         final displayList = list.take(8).toList();
                         return RefreshIndicator(
                           color: const Color(0xFF7B5CF0),
@@ -499,8 +567,7 @@ class _ServersPanelState extends State<_ServersPanel> {
                               return _ServerTile(
                                     server: s,
                                     selected: sel,
-                                    connecting:
-                                        vpn.isConnecting && sel,
+                                    connecting: vpn.isConnecting && sel,
                                     connected: vpn.isConnected && sel,
                                     onTap: () => vpn.connectTo(s),
                                   );
@@ -566,7 +633,7 @@ class _FilterBadge extends StatelessWidget {
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 200),
-          height: 52, // ارتفاع ثابت لكل الباجات
+          height: 52,
           decoration: BoxDecoration(
             color: active
                 ? activeColor.withValues(alpha: 0.12)
@@ -590,8 +657,7 @@ class _FilterBadge extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
-                    color:
-                        active ? activeColor : const Color(0xFF6B7280),
+                    color: active ? activeColor : const Color(0xFF6B7280),
                   )),
             ],
           ),
@@ -667,7 +733,7 @@ class _ServerTile extends StatelessWidget {
                                 color: const Color(0xFF1D9E75)
                                     .withValues(alpha: 0.4)),
                           ),
-                          child: const Text('443',
+                          child: const Text('TLS',
                               style: TextStyle(
                                   color: Color(0xFF1D9E75),
                                   fontSize: 9,
