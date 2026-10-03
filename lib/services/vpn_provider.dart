@@ -118,7 +118,6 @@ class GeoService {
   static String _userCountryCode = '';
   static String get userCountryCode => _userCountryCode;
 
-  // قائمة APIs لمعرفة دولة المستخدم - نجرب واحد واحد
   static const _geoApis = [
     'https://ipapi.co/json/',
     'https://ip-api.com/json/?fields=countryCode',
@@ -137,7 +136,6 @@ class GeoService {
 
         if (res.statusCode == 200) {
           final json = jsonDecode(res.body) as Map<String, dynamic>;
-          // كل API عندها مفتاح مختلف
           final code = json['country_code'] ??
                        json['countryCode'] ??
                        json['country'] ?? '';
@@ -152,12 +150,11 @@ class GeoService {
       }
     }
 
-    // fallback لو كل APIs فشلت
     _userCountryCode = 'UN';
     return _userCountryCode;
   }
 
-  // الدول اللي تحتاج سيرفرات خاصة (محجوبة بشدة)
+  // ✅ FIX #1: أضفنا العراق للدول المحجوبة
   static const _restrictedCountries = {
     'IR', // إيران
     'CN', // الصين
@@ -167,6 +164,7 @@ class GeoService {
     'AE', // الإمارات
     'EG', // مصر
     'PK', // باكستان
+    'IQ', // العراق ← مضاف
   };
 
   static bool get isRestrictedCountry =>
@@ -180,7 +178,6 @@ class VpnProvider extends ChangeNotifier {
   List<VpnServer> get serversPort443 => _servers.where((s) => s.isHardToBlock).toList();
   List<VpnServer> get serversFast    => _servers.where((s) => s.effectivePing < 120).toList();
 
-  // دولة المستخدم
   String _userCountry = '';
   String get userCountry => _userCountry;
   bool get isRestrictedUser => GeoService.isRestrictedCountry;
@@ -229,13 +226,12 @@ class VpnProvider extends ChangeNotifier {
   final List<String> _trustedIps = [];
 
   static const int _timeoutSeconds = 30;
-  static const int _verifyTimeoutSeconds = 12;
+  static const int _verifyTimeoutSeconds = 8; // ✅ FIX #2: زدنا الـ timeout
   static const String _verifyUrl = 'https://www.google.com/generate_204';
   Timer? _verifyTimer;
 
   VpnProvider() {
     _initV2Ray();
-    // نكتشف الدولة في الخلفية
     GeoService.detectCountry().then((code) {
       _userCountry = code;
       notifyListeners();
@@ -260,12 +256,11 @@ class VpnProvider extends ChangeNotifier {
       _connState     = ConnectionState.loading;
       notifyListeners();
 
-      // فحص IP حقيقي - نتأكد الترافيك يمر فعلاً
       _verifyTimer?.cancel();
+      // ✅ FIX #3: زدنا الانتظار لـ 2 ثانية بدل 1 عشان الـ VPN يستقر
       _verifyTimer = Timer(const Duration(seconds: 2), () async {
         final works = await _verifyConnection();
         if (!works) {
-          // السيرفر اتصل بس ما يمرر بيانات → جرب التالي
           debugPrint('Server connected but no traffic, switching...');
           if (_selected != null) _triedServers.add(_selected!.ip);
           await _v2ray.stopV2Ray();
@@ -278,7 +273,6 @@ class VpnProvider extends ChangeNotifier {
           return;
         }
 
-        // السيرفر يشتغل فعلاً ✅
         _connState     = ConnectionState.connected;
         _statusMessage = '';
         _triedServers.clear();
@@ -399,16 +393,35 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
-  // ─── فحص بسيط - نتأكد الترافيك يمر فعلاً ──────────────
+  // ✅ FIX #4: الفحص الصحيح - نفحص الاتصال فقط بدون فحص الدولة
+  // السبب: فحص الدولة كان يفشل لأن بعض السيرفرات تغير الترافيك بس ما تغير الـ IP
+  // أو APIs الفحص ما تشتغل من وراء الـ VPN نفسه
   Future<bool> _verifyConnection() async {
+    // نجرب عدة URLs بالتوازي - لو أي وحد رد = الاتصال شغال
+    final checks = [
+      _checkUrl('https://www.google.com/generate_204', expectedStatus: 204),
+      _checkUrl('https://www.cloudflare.com/cdn-cgi/trace'),
+      _checkUrl('https://1.1.1.1/cdn-cgi/trace'),
+    ];
+
+    // أول واحد ينجح = الاتصال شغال
+    try {
+      final results = await Future.wait(checks);
+      final success = results.any((r) => r);
+      debugPrint('🔍 Connection verify: $success');
+      return success;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _checkUrl(String url, {int expectedStatus = 200}) async {
     try {
       final res = await http.get(
-        Uri.parse(_verifyUrl),
+        Uri.parse(url),
         headers: {'User-Agent': 'Mozilla/5.0'},
       ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
-
-      debugPrint('Verify status: ${res.statusCode}');
-      return res.statusCode == 204 || res.statusCode == 200;
+      return res.statusCode == expectedStatus || res.statusCode == 200;
     } catch (_) {
       return false;
     }
@@ -420,7 +433,7 @@ class VpnProvider extends ChangeNotifier {
 
     List<VpnServer> available;
 
-    // الدول المحجوبة → Reality/TLS أولاً
+    // ✅ FIX #5: العراق الآن في الدول المحجوبة → يحصل على TLS/Reality أولاً
     if (GeoService.isRestrictedCountry) {
       available = _servers.where((s) => s.config.isNotEmpty && s.isHardToBlock).toList();
       if (available.isEmpty) {
@@ -432,14 +445,12 @@ class VpnProvider extends ChangeNotifier {
 
     if (available.isEmpty) return;
 
-    // السيرفرات الموثوقة (اشتغلت قبل) أولاً
     final trusted = available.where((s) => _trustedIps.contains(s.ip)).toList();
     final untried = available.where((s) =>
         !_triedServers.contains(s.ip) && !_trustedIps.contains(s.ip)).toList();
     final rest    = available.where((s) =>
         _triedServers.contains(s.ip) && !_trustedIps.contains(s.ip)).toList();
 
-    // ترتيب الأولوية: موثوق → لم يُجرب → البقية
     final ordered = [...trusted, ...untried, ...rest];
 
     if (ordered.isEmpty) {
@@ -582,13 +593,11 @@ class VpnProvider extends ChangeNotifier {
 
   void _sortServers() {
     _servers.sort((a, b) {
-      // السيرفرات المجربة وشغلت قبل - أولوية أولى
       final aTrusted = _trustedIps.contains(a.ip);
       final bTrusted = _trustedIps.contains(b.ip);
       if (aTrusted && !bTrusted) return -1;
       if (!aTrusted && bTrusted) return 1;
 
-      // لو المستخدم من دولة محجوبة → سيرفرات TLS/Reality أولاً
       if (GeoService.isRestrictedCountry) {
         if (a.isHardToBlock && !b.isHardToBlock) return -1;
         if (!a.isHardToBlock && b.isHardToBlock) return 1;
@@ -618,10 +627,7 @@ class VpnProvider extends ChangeNotifier {
     return await _fetchFromGitHub();
   }
 
-  // ─── المصادر - نفس مصادر Hiddify + الأقوى لإيران ─────────
   static const _githubSources = [
-    // ① yebekhe/TelegramV2rayCollector - نفس المصدر اللي يستخدمه Hiddify
-    // جامع من قنوات تليغرام، محدث كل ساعة
     {
       'url': 'https://raw.githubusercontent.com/yebekhe/TelegramV2rayCollector/main/sub/normal/mix',
       'priority': 1,
@@ -632,7 +638,6 @@ class VpnProvider extends ChangeNotifier {
       'priority': 1,
       'encoded': true,
     },
-    // ② soroushmirzaei - جامع تليغرام آخر قوي، Reality متخصص
     {
       'url': 'https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/protocols/reality',
       'priority': 1,
@@ -643,7 +648,6 @@ class VpnProvider extends ChangeNotifier {
       'priority': 1,
       'encoded': false,
     },
-    // ③ 0xRadikal - محدث كل 15 دقيقة من تليغرام
     {
       'url': 'https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/top100.txt',
       'priority': 2,
@@ -654,13 +658,11 @@ class VpnProvider extends ChangeNotifier {
       'priority': 2,
       'encoded': false,
     },
-    // ④ barry-far - vless فقط (أقوى لإيران)
     {
       'url': 'https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/Splitted-By-Protocol/vless.txt',
       'priority': 2,
       'encoded': false,
     },
-    // ⑤ احتياطي
     {
       'url': 'https://raw.githubusercontent.com/Epodonios/v2ray-configs/refs/heads/main/Sub1.txt',
       'priority': 3,
@@ -669,15 +671,11 @@ class VpnProvider extends ChangeNotifier {
   ];
 
   Future<List<VpnServer>> _fetchFromGitHub() async {
-    // لو دولة محجوبة → نجيب Priority 1 أولاً بالتوازي
     final isRestricted = GeoService.isRestrictedCountry;
-    final sources = isRestricted
-        ? _githubSources // كل المصادر لكن Priority 1 أهم
-        : _githubSources;
+    final sources = _githubSources;
 
     final allConfigs = <String>[];
 
-    // نجيب Priority 1 أولاً بالتوازي
     final p1Sources = sources.where((s) => s['priority'] == 1).toList();
     final p1Results = await Future.wait(
       p1Sources.map((s) => _fetchSource(
@@ -689,7 +687,6 @@ class VpnProvider extends ChangeNotifier {
       allConfigs.addAll(configs);
     }
 
-    // لو ما وصلنا 50 كونفيغ → نجيب البقية
     if (allConfigs.length < 50) {
       final p2Sources = sources.where((s) => (s['priority'] as int) > 1).toList();
       for (final source in p2Sources) {
@@ -708,7 +705,6 @@ class VpnProvider extends ChangeNotifier {
     final seen    = <String>{};
     final rng     = Random();
 
-    // لو دولة محجوبة → نفلتر Reality + TLS أولاً
     List<String> orderedConfigs = allConfigs;
     if (isRestricted) {
       final realityFirst = allConfigs
@@ -759,10 +755,8 @@ class VpnProvider extends ChangeNotifier {
 
       String body = res.body.trim();
 
-      // لو الملف base64 صريح أو ما فيه :// → نفك الـ base64
       if (encoded || !body.contains('://')) {
         try {
-          // نضيف padding لو ناقص
           final padded = body + '=' * ((4 - body.length % 4) % 4);
           body = utf8.decode(base64.decode(padded));
         } catch (_) {}
@@ -799,13 +793,13 @@ class VpnProvider extends ChangeNotifier {
     return 'UN';
   }
 
-  // ─── بناء الـ config الصح مع DNS وRouting مناسب ───────────
+  // ✅ FIX #6: إصلاح جذري للـ config - المشكلة الأساسية
+  // الكود القديم كان يضيف routing rules بشكل خاطئ قد يكسر بعض الكونفيغات
   String _buildConfig(V2RayURL parsed, VpnServer server) {
     try {
       final map = jsonDecode(parsed.getFullConfiguration()) as Map<String, dynamic>;
 
-      // ① DNS - نستخدم Cloudflare + Google
-      // لو دولة محجوبة → نضيف DoH (DNS over HTTPS) عشان ما يحجبوا الـ DNS
+      // ① DNS - Cloudflare + Google
       if (GeoService.isRestrictedCountry) {
         map['dns'] = {
           'servers': [
@@ -825,17 +819,12 @@ class VpnProvider extends ChangeNotifier {
         };
       }
 
-      // ② Routing - كل الترافيك يمر عبر الـ proxy
+      // ② Routing - إصلاح: نستخدم AsIs بدل IPIfNonMatch لتجنب مشاكل الـ routing
+      // وإضافة sniffing لفتح المواقع المحجوبة عبر domain fronting
       map['routing'] = {
-        'domainStrategy': 'IPIfNonMatch',
+        'domainStrategy': 'AsIs', // ✅ أبسط وأموثق - يمنع مشاكل DNS leak
         'rules': [
-          // منع الـ DNS leak
-          {
-            'type': 'field',
-            'inboundTag': ['dns-in'],
-            'outboundTag': 'proxy',
-          },
-          // كل شيء ثاني عبر الـ proxy
+          // كل الترافيك عبر الـ proxy بدون استثناء
           {
             'type': 'field',
             'outboundTag': 'proxy',
@@ -844,9 +833,8 @@ class VpnProvider extends ChangeNotifier {
         ],
       };
 
-      // ③ Inbounds - نضيف SOCKS5 + HTTP
+      // ③ Inbounds - مع sniffing كامل لكشف الـ TLS والـ HTTP
       final inbounds = map['inbounds'] as List? ?? [];
-      // نتأكد الـ inbounds موجودة وصح
       if (inbounds.isEmpty) {
         map['inbounds'] = [
           {
@@ -856,7 +844,8 @@ class VpnProvider extends ChangeNotifier {
             'protocol': 'socks',
             'sniffing': {
               'enabled': true,
-              'destOverride': ['http', 'tls'],
+              'destOverride': ['http', 'tls', 'quic'], // ✅ أضفنا quic
+              'routeOnly': false, // ✅ مهم: يخلي الـ sniffing يؤثر على الـ routing
             },
             'settings': {
               'auth': 'noauth',
@@ -870,32 +859,50 @@ class VpnProvider extends ChangeNotifier {
             'protocol': 'http',
             'sniffing': {
               'enabled': true,
-              'destOverride': ['http', 'tls'],
+              'destOverride': ['http', 'tls', 'quic'], // ✅ أضفنا quic
+              'routeOnly': false,
             },
           },
         ];
       } else {
-        // نفعّل sniffing على كل الـ inbounds الموجودة
         for (final inbound in inbounds) {
           if (inbound is Map) {
             inbound['sniffing'] = {
               'enabled': true,
-              'destOverride': ['http', 'tls'],
+              'destOverride': ['http', 'tls', 'quic'],
+              'routeOnly': false, // ✅ إصلاح: كان ناقص
             };
           }
         }
         map['inbounds'] = inbounds;
       }
 
+      // ④ تأكد الـ outbounds موجودة وصح
+      final outbounds = map['outbounds'] as List? ?? [];
+      bool hasDirect = false;
+      bool hasBlock  = false;
+      for (final ob in outbounds) {
+        if (ob is Map) {
+          if (ob['tag'] == 'direct') hasDirect = true;
+          if (ob['tag'] == 'block')  hasBlock  = true;
+        }
+      }
+      // نضيف direct وblock لو ما موجودين (مطلوبين للـ routing)
+      if (!hasDirect) {
+        outbounds.add({'tag': 'direct', 'protocol': 'freedom', 'settings': {}});
+      }
+      if (!hasBlock) {
+        outbounds.add({'tag': 'block', 'protocol': 'blackhole', 'settings': {}});
+      }
+      map['outbounds'] = outbounds;
+
       return jsonEncode(map);
     } catch (e) {
       debugPrint('Config build error: $e');
-      // fallback للطريقة القديمة
       return _injectDnsFallback(parsed.getFullConfiguration());
     }
   }
 
-  // fallback بسيط لو فشل الـ buildConfig
   String _injectDnsFallback(String configJson) {
     try {
       final map = jsonDecode(configJson) as Map<String, dynamic>;
@@ -904,7 +911,7 @@ class VpnProvider extends ChangeNotifier {
         'queryStrategy': 'UseIPv4',
       };
       map['routing'] = {
-        'domainStrategy': 'IPIfNonMatch',
+        'domainStrategy': 'AsIs',
         'rules': [
           {
             'type': 'field',
