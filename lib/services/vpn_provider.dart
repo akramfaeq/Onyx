@@ -229,6 +229,9 @@ class VpnProvider extends ChangeNotifier {
   final List<String> _trustedIps = [];
 
   static const int _timeoutSeconds = 30;
+  static const int _verifyTimeoutSeconds = 6;
+  static const String _verifyUrl = 'https://www.google.com/generate_204';
+  Timer? _verifyTimer;
 
   VpnProvider() {
     _initV2Ray();
@@ -253,22 +256,46 @@ class VpnProvider extends ChangeNotifier {
     if (state == 'CONNECTED') {
       _disconnectDebounce?.cancel();
       _connectionTimeout?.cancel();
-      _connState     = ConnectionState.connected;
-      _statusMessage = '';
-      _triedServers.clear();
-      _downloadSpeed = formatSpeed(status.download);
-      _uploadSpeed   = formatSpeed(status.upload);
-
-      if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
-        _trustedIps.insert(0, _selected!.ip);
-        if (_trustedIps.length > 10) _trustedIps.removeLast();
-      }
-
-      _connectedAt = DateTime.now();
-      _startStats();
-      AdsService.showInterstitialAfterSuccess(1);
-      _showNotification(_selected?.countryName ?? 'VPN', _selected?.effectivePing ?? -1);
+      _statusMessage = 'Verifying connection...';
+      _connState     = ConnectionState.loading;
       notifyListeners();
+
+      // فحص IP حقيقي - نتأكد الترافيك يمر فعلاً
+      _verifyTimer?.cancel();
+      _verifyTimer = Timer(const Duration(seconds: 1), () async {
+        final works = await _verifyConnection();
+        if (!works) {
+          // السيرفر اتصل بس ما يمرر بيانات → جرب التالي
+          debugPrint('Server connected but no traffic, switching...');
+          if (_selected != null) _triedServers.add(_selected!.ip);
+          await _v2ray.stopV2Ray();
+          _connState     = ConnectionState.failed;
+          _statusMessage = 'Server unreachable, trying next...';
+          notifyListeners();
+          Timer(const Duration(milliseconds: 500), () {
+            if (_connState == ConnectionState.failed) connectFastest();
+          });
+          return;
+        }
+
+        // السيرفر يشتغل فعلاً ✅
+        _connState     = ConnectionState.connected;
+        _statusMessage = '';
+        _triedServers.clear();
+        _downloadSpeed = formatSpeed(status.download);
+        _uploadSpeed   = formatSpeed(status.upload);
+
+        if (_selected != null && !_trustedIps.contains(_selected!.ip)) {
+          _trustedIps.insert(0, _selected!.ip);
+          if (_trustedIps.length > 10) _trustedIps.removeLast();
+        }
+
+        _connectedAt = DateTime.now();
+        _startStats();
+        AdsService.showInterstitialAfterSuccess(1);
+        _showNotification(_selected?.countryName ?? 'VPN', _selected?.effectivePing ?? -1);
+        notifyListeners();
+      });
 
     } else if (state == 'DISCONNECTED') {
       _disconnectDebounce?.cancel();
@@ -372,11 +399,26 @@ class VpnProvider extends ChangeNotifier {
     }
   }
 
+  // ─── فحص IP حقيقي - نتأكد الترافيك يمر ─────────────────
+  Future<bool> _verifyConnection() async {
+    try {
+      final res = await http.get(
+        Uri.parse(_verifyUrl),
+        headers: {'User-Agent': 'Mozilla/5.0'},
+      ).timeout(const Duration(seconds: _verifyTimeoutSeconds));
+      return res.statusCode == 204 || res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ─── Smart Connect - يختار أسرع سيرفر تلقائياً ──────────
   Future<void> connectFastest() async {
     if (_servers.isEmpty) await fetchServers();
 
-    // لو المستخدم من دولة محجوبة → نعطي أولوية لسيرفرات TLS/Reality
     List<VpnServer> available;
+
+    // الدول المحجوبة → Reality/TLS أولاً
     if (GeoService.isRestrictedCountry) {
       available = _servers.where((s) => s.config.isNotEmpty && s.isHardToBlock).toList();
       if (available.isEmpty) {
@@ -388,14 +430,24 @@ class VpnProvider extends ChangeNotifier {
 
     if (available.isEmpty) return;
 
-    final untried = available.where((s) => !_triedServers.contains(s.ip)).toList();
-    if (untried.isEmpty) {
+    // السيرفرات الموثوقة (اشتغلت قبل) أولاً
+    final trusted = available.where((s) => _trustedIps.contains(s.ip)).toList();
+    final untried = available.where((s) =>
+        !_triedServers.contains(s.ip) && !_trustedIps.contains(s.ip)).toList();
+    final rest    = available.where((s) =>
+        _triedServers.contains(s.ip) && !_trustedIps.contains(s.ip)).toList();
+
+    // ترتيب الأولوية: موثوق → لم يُجرب → البقية
+    final ordered = [...trusted, ...untried, ...rest];
+
+    if (ordered.isEmpty) {
       _triedServers.clear();
       await connectTo(available.first);
-    } else {
-      _triedServers.add(untried.first.ip);
-      await connectTo(untried.first);
+      return;
     }
+
+    _triedServers.add(ordered.first.ip);
+    await connectTo(ordered.first);
   }
 
   Future<void> disconnect() async {
@@ -870,6 +922,7 @@ class VpnProvider extends ChangeNotifier {
     _statsTimer?.cancel();
     _connectionTimeout?.cancel();
     _disconnectDebounce?.cancel();
+    _verifyTimer?.cancel();
     super.dispose();
   }
 }
