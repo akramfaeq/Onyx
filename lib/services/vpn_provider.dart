@@ -288,7 +288,7 @@ class VpnProvider extends ChangeNotifier {
 
     try {
       final parsed = FlutterV2ray.parseFromURL(server.config);
-      final fullConfig = _injectDns(parsed.getFullConfiguration());
+      final fullConfig = parsed.getFullConfiguration();
       await _v2ray.startV2Ray(
         remark:          server.countryName,
         config:          fullConfig,
@@ -557,35 +557,6 @@ class VpnProvider extends ChangeNotifier {
     if (r.contains('FI') || r.contains('FINLAND')) return 'FI';
     if (r.contains('SE') || r.contains('SWEDEN')) return 'SE';
     return 'UN';
-  }
-
-  // ─── inject DNS + routing ─────────────────────────────────
-  String _injectDns(String configJson) {
-    try {
-      final map = jsonDecode(configJson) as Map<String, dynamic>;
-
-      // DNS
-      map['dns'] = {
-        "servers": ["1.1.1.1", "8.8.8.8", "8.8.4.4"],
-        "queryStrategy": "UseIPv4",
-      };
-
-      // Routing — تأكد كل الترافيك يمر خلال الـ proxy
-      map['routing'] = {
-        "domainStrategy": "IPIfNonMatch",
-        "rules": [
-          {
-            "type": "field",
-            "outboundTag": "proxy",
-            "network": "tcp,udp",
-          }
-        ],
-      };
-
-      return jsonEncode(map);
-    } catch (_) {
-      return configJson;
-    }
   }
 
   @override
