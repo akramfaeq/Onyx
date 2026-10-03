@@ -405,115 +405,26 @@ class _ServersPanelState extends State<_ServersPanel> {
     });
   }
 
-  List<VpnServer> _filtered(List<VpnServer> all) {
+  List<VpnServer> _filtered(VpnProvider vpn) {
     switch (_filter) {
       case _ServerFilter.port443:
-        return all.where((s) => s.isHardToBlock).toList();
+        return vpn.serversPort443;
       case _ServerFilter.fast:
-        // نستخدم effectivePing (الـ ping الحقيقي إن وُجد) وإلا ping الأصلي
-        return all.where((s) => s.effectivePing <= 100).toList();
+        return vpn.serversFast;
       case _ServerFilter.all:
-        return all;
+        return vpn.servers;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final vpn = widget.vpn;
-    final antiBlockOn = vpn.antiBlockMode;
 
     return Expanded(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ── Anti-Block زر ──────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: GestureDetector(
-              onTap: () => vpn.toggleAntiBlock(),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 11),
-                decoration: BoxDecoration(
-                  color: antiBlockOn
-                      ? const Color(0xFF1A1200)
-                      : const Color(0xFF12121E),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: antiBlockOn
-                        ? const Color(0xFFF48120).withValues(alpha: 0.5)
-                        : const Color(0xFF1E1E2E),
-                    width: 1.5,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 34, height: 34,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF48120).withValues(alpha: 0.15),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.shield_outlined,
-                          color: Color(0xFFF48120), size: 18),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Anti-Block Mode',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600)),
-                          Text(
-                            antiBlockOn
-                                ? 'Active — bypassing restrictions'
-                                : 'Bypass restrictions & censorship',
-                            style: TextStyle(
-                                color: const Color(0xFFF48120)
-                                    .withValues(alpha: 0.7),
-                                fontSize: 10),
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Toggle switch
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      width: 42, height: 24,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        color: antiBlockOn
-                            ? const Color(0xFFF48120)
-                            : const Color(0xFF2A2A3E),
-                      ),
-                      child: Stack(
-                        children: [
-                          AnimatedPositioned(
-                            duration: const Duration(milliseconds: 200),
-                            left: antiBlockOn ? 20 : 2,
-                            top: 2,
-                            child: Container(
-                              width: 20, height: 20,
-                              decoration: const BoxDecoration(
-                                  color: Colors.white,
-                                  shape: BoxShape.circle),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 12),
-
+          const SizedBox(height: 4),
           // ── بادجات الفلتر ──────────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -558,7 +469,7 @@ class _ServersPanelState extends State<_ServersPanel> {
                 : vpn.servers.isEmpty
                     ? _emptyView(vpn)
                     : Builder(builder: (ctx) {
-                        final list = _filtered(vpn.serversForRegion);
+                        final list = _filtered(vpn);
                         if (list.isEmpty) {
                           return Center(
                             child: Text(
@@ -585,20 +496,14 @@ class _ServersPanelState extends State<_ServersPanel> {
                             itemBuilder: (_, i) {
                               final s   = displayList[i];
                               final sel = vpn.selectedServer?.ip == s.ip;
-                              return Opacity(
-                                opacity: antiBlockOn ? 0.3 : 1.0,
-                                child: IgnorePointer(
-                                  ignoring: antiBlockOn,
-                                  child: _ServerTile(
+                              return _ServerTile(
                                     server: s,
                                     selected: sel,
                                     connecting:
                                         vpn.isConnecting && sel,
                                     connected: vpn.isConnected && sel,
                                     onTap: () => vpn.connectTo(s),
-                                  ),
-                                ),
-                              );
+                                  );
                             },
                           ),
                         );
