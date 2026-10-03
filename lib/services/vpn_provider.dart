@@ -288,10 +288,15 @@ class VpnProvider extends ChangeNotifier {
 
     try {
       final parsed = FlutterV2ray.parseFromURL(server.config);
-      final fullConfig = parsed.getFullConfiguration();
+
+      // DNS الصحيح — يعدّل على الـ parser مباشرة
+      parsed.dns = {
+        "servers": ["1.1.1.1", "8.8.8.8"],
+      };
+
       await _v2ray.startV2Ray(
         remark:          server.countryName,
-        config:          fullConfig,
+        config:          parsed.getFullConfiguration(),
         blockedApps:     null,
         bypassSubnets:   null,
         proxyOnly:       false,
