@@ -1,23 +1,5 @@
-import 'package:flutter/services.dart';
-
+// Notifications تتعامل معها OnyxVpnService.kt مباشرة
 class NotificationService {
-  static const _channel = MethodChannel('com.onyxvpn.notification');
-
-  static Future<void> showConnected({
-    required String modeName,
-    required String modeEmoji,
-  }) async {
-    try {
-      await _channel.invokeMethod('show', {
-        'title': 'OnyxVPN Connected',
-        'body': '$modeEmoji $modeName — Tap to disconnect',
-      });
-    } catch (_) {}
-  }
-
-  static Future<void> hide() async {
-    try {
-      await _channel.invokeMethod('hide');
-    } catch (_) {}
-  }
+  static Future<void> showConnected({String modeName = '', String modeEmoji = ''}) async {}
+  static Future<void> hide() async {}
 }

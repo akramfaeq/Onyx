@@ -23,8 +23,8 @@ void main() async {
     systemNavigationBarColor: Color(0xFF08080F),
   ));
 
-  // تهيئة الإعلانات
-  await AdsService.init();
+  // FIX: كان يستدعي AdsService.init() لكن اسم الدالة هو initialize()
+  await AdsService.initialize();
 
   runApp(const OnyxVpnApp());
 }
@@ -58,7 +58,7 @@ class OnyxVpnApp extends StatelessWidget {
   }
 }
 
-// ─── Info Screen بسيطة ───────────────────────────────────────
+// ─── Info Screen ─────────────────────────────────────────────
 class InfoScreen extends StatelessWidget {
   const InfoScreen({super.key});
 
@@ -87,13 +87,13 @@ class InfoScreen extends StatelessWidget {
             _InfoCard(
               icon: '☁️',
               title: 'Warp',
-              desc: 'Cloudflare WireGuard — سريع ومستقر',
+              desc: 'Cloudflare WireGuard — سريع ومستقر، يجرب 3 مفاتيح تلقائياً',
             ),
             const SizedBox(height: 12),
             _InfoCard(
               icon: '🔐',
               title: 'Psiphon',
-              desc: 'Multi-hop tunnel — الأفضل للدول المحجوبة',
+              desc: 'VLESS/WS tunnel — الأفضل للدول المحجوبة',
             ),
             const SizedBox(height: 12),
             _InfoCard(

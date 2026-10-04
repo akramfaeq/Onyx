@@ -1,21 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.onyxvpn">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- صلاحيات VPN -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.BIND_VPN_SERVICE"/>
 
     <application
         android:label="OnyxVPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:usesCleartextTraffic="true">
+
+        <property
+            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+            android:value="vpn"/>
 
         <activity
             android:name=".MainActivity"
@@ -34,9 +37,9 @@
             </intent-filter>
         </activity>
 
-        <!-- VPN Service من flutter_singbox_client -->
+        <!-- OnyxVPN Service — يشغّل hiddify-core -->
         <service
-            android:name="io.nekohasekai.sfa.bg.VpnService"
+            android:name=".OnyxVpnService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">

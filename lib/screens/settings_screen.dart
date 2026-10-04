@@ -75,7 +75,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 24),
 
             // ─── Speed Test ───────────────────────────────
-            _SectionTitle('Connection'),
+            ('Connection'),
             _ActionTile(
               icon: Icons.speed_rounded,
               title: 'Auto Speed Test',
@@ -90,7 +90,7 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
       ),
-    );
+    );_SectionTitle
   }
 }
 

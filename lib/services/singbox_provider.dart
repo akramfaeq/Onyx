@@ -1,37 +1,44 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_singbox_client/flutter_singbox_client.dart';
 import '../models/vpn_mode.dart';
-import 'singbox_configs.dart';
+import 'v2ray_configs.dart';
+import 'warp_service.dart';
+import 'mahsa_service.dart';
 import 'geo_service.dart';
-import 'notification_service.dart';
+
+export 'v2ray_configs.dart';
 
 enum VpnState { disconnected, connecting, connected, failed }
 
 class SingboxProvider extends ChangeNotifier {
 
-  VpnState        _state         = VpnState.disconnected;
-  VpnMode         _mode          = VpnMode.warp;
-  String          _status        = '';
-  String          _downSpeed     = '0 B/s';
-  String          _upSpeed       = '0 B/s';
-  String?         _customUrl;
-  Duration        _duration      = Duration.zero;
-  List<String>    _excludedApps  = [];
-  bool            _blockAds      = true;
-  bool            _autoSpeedTest = true;
+  // ─── Channels ─────────────────────────────────────────────
+  static const _method = MethodChannel('com.onyxvpn/vpn');
+  static const _events = EventChannel('com.onyxvpn/status');
 
-  VpnState     get state         => _state;
-  VpnMode      get mode          => _mode;
-  String       get status        => _status;
-  String       get downSpeed     => _downSpeed;
-  String       get upSpeed       => _upSpeed;
-  String?      get customUrl     => _customUrl;
-  Duration     get duration      => _duration;
-  List<String> get excludedApps  => _excludedApps;
+  // ─── State ────────────────────────────────────────────────
+  VpnState     _state        = VpnState.disconnected;
+  VpnMode      _mode         = VpnMode.warp;
+  String       _status       = '';
+  String       _downSpeed    = '0 B/s';
+  String       _upSpeed      = '0 B/s';
+  String?      _customUrl;
+  Duration     _duration     = Duration.zero;
+  List<String> _excludedApps = [];
+  bool         _blockAds       = true;
+  bool         _autoSpeedTest  = false;
+
+  VpnState     get state        => _state;
+  VpnMode      get mode         => _mode;
+  String       get status       => _status;
+  String       get downSpeed    => _downSpeed;
+  String       get upSpeed      => _upSpeed;
+  String?      get customUrl    => _customUrl;
+  Duration     get duration     => _duration;
+  List<String> get excludedApps => _excludedApps;
   bool         get blockAds      => _blockAds;
   bool         get autoSpeedTest => _autoSpeedTest;
 
@@ -39,42 +46,39 @@ class SingboxProvider extends ChangeNotifier {
   bool get isConnecting => _state == VpnState.connecting;
   bool get isFailed     => _state == VpnState.failed;
 
-  // ─── الـ API الصحيح: SingboxClient ───────────────────────
-  final _client = SingboxClient();
-  Timer? _statsTimer;
-  Timer? _verifyTimer;
-  DateTime? _connectedAt;
+  Timer?              _durationTimer;
+  Timer?              _statsTimer;
+  DateTime?           _connectedAt;
+  StreamSubscription? _statusSub;
 
   static const _prefCustomUrl    = 'custom_url';
   static const _prefExcludedApps = 'excluded_apps';
   static const _prefBlockAds     = 'block_ads';
-  static const _prefAutoSpeed    = 'auto_speed_test';
+  static const _prefLastConfig    = 'last_config_v2';
+  static const _prefAutoSpeedTest = 'auto_speed_test';
 
   SingboxProvider() { _init(); }
 
   Future<void> _init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _customUrl     = prefs.getString(_prefCustomUrl);
-    _blockAds      = prefs.getBool(_prefBlockAds)    ?? true;
-    _autoSpeedTest = prefs.getBool(_prefAutoSpeed)   ?? true;
-
-    final saved = prefs.getStringList(_prefExcludedApps);
+    final prefs   = await SharedPreferences.getInstance();
+    _customUrl    = prefs.getString(_prefCustomUrl);
+    _blockAds      = prefs.getBool(_prefBlockAds) ?? true;
+    _autoSpeedTest = prefs.getBool(_prefAutoSpeedTest) ?? false;
+    final saved   = prefs.getStringList(_prefExcludedApps);
     if (saved != null) _excludedApps = saved;
 
-    // تهيئة المكتبة
-    await _client.initialize();
+    try {
+      await _method.invokeMethod('setup', {'grpcPort': 9090});
+    } catch (e) {
+      debugPrint('setup error: $e');
+    }
 
-    // نحمل الدولة
+    _statusSub = _events.receiveBroadcastStream().listen(_onNativeStatus);
+
     await GeoService.load();
     _mode = _bestMode();
-
-    // نستمع للأحداث
-    _client.serviceStateStream.listen(_onStateChanged);
-    _client.trafficStatsStream.listen(_onTraffic);
-    _client.faultStream.listen((err) {
-      debugPrint('SingBox fault: $err');
-      _setFailed(err.toString());
-    });
+    WarpService.getKeys();
+    MahsaService.getLinks();
 
     notifyListeners();
   }
@@ -83,6 +87,178 @@ class SingboxProvider extends ChangeNotifier {
     switch (GeoService.recommendedMode) {
       case 'psiphon': return VpnMode.psiphon;
       default:        return VpnMode.warp;
+    }
+  }
+
+  // ─── Native Status Handler ────────────────────────────────
+  void _onNativeStatus(dynamic event) {
+    final s = event.toString();
+    debugPrint('native status: $s');
+
+    if (s == 'connected') {
+      _state       = VpnState.connected;
+      _status      = '';
+      _connectedAt ??= DateTime.now();
+      _startTimer();
+      _startStatsTimer();
+    } else if (s == 'disconnected') {
+      _state       = VpnState.disconnected;
+      _status      = '';
+      _stopTimers();
+      _connectedAt = null;
+      _downSpeed   = '0 B/s';
+      _upSpeed     = '0 B/s';
+    } else if (s.startsWith('failed')) {
+      final msg = s.contains(':') ? s.split(':').skip(1).join(':') : 'Connection failed';
+      _setFailed(msg.trim());
+    } else if (s == 'permission_requested') {
+      _status = 'Waiting for permission...';
+    } else if (s.startsWith('stats:')) {
+      _parseStats(s.substring(6));
+    }
+    notifyListeners();
+  }
+
+  // ─── Stats Polling ────────────────────────────────────────
+  void _startStatsTimer() {
+    _statsTimer?.cancel();
+    _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (!isConnected) { _statsTimer?.cancel(); return; }
+      try {
+        final result = await _method.invokeMethod('getStats');
+        if (result is Map) {
+          final down = result['down'] as int? ?? 0;
+          final up   = result['up']   as int? ?? 0;
+          _downSpeed = _formatSpeed(down);
+          _upSpeed   = _formatSpeed(up);
+          notifyListeners();
+        }
+      } catch (_) {}
+    });
+  }
+
+  void _parseStats(String raw) {
+    try {
+      final parts = raw.split(':');
+      if (parts.length >= 2) {
+        _downSpeed = _formatSpeed(int.tryParse(parts[0]) ?? 0);
+        _upSpeed   = _formatSpeed(int.tryParse(parts[1]) ?? 0);
+      }
+    } catch (_) {}
+  }
+
+  String _formatSpeed(int bytesPerSec) {
+    if (bytesPerSec < 1024)        return '$bytesPerSec B/s';
+    if (bytesPerSec < 1024 * 1024) return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
+    return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+  }
+
+  // ─── Connect / Disconnect ─────────────────────────────────
+  Future<void> connect() async {
+    if (_state == VpnState.connecting || _state == VpnState.connected) {
+      await disconnect();
+      return;
+    }
+
+    _state  = VpnState.connecting;
+    _status = 'Building config...';
+    notifyListeners();
+
+    try {
+      final cc = GeoService.userCountryCode.toLowerCase().isNotEmpty
+          ? GeoService.userCountryCode.toLowerCase()
+          : 'iq';
+
+      final config = await _buildConfig(cc);
+      if (config == null || config.isEmpty) {
+        _setFailed('No servers available');
+        return;
+      }
+
+      await _saveLastConfig(config);
+
+      _status = 'Connecting...';
+      notifyListeners();
+
+      final result = await _method.invokeMethod('start', {'config': config});
+      debugPrint('start result: $result');
+
+    } on PlatformException catch (e) {
+      debugPrint('PlatformException: ${e.code} — ${e.message}');
+      _setFailed('${e.message}');
+    } catch (e) {
+      debugPrint('connect error: $e');
+      _setFailed('Error: $e');
+    }
+  }
+
+  Future<void> disconnect() async {
+    try {
+      await _method.invokeMethod('stop');
+    } catch (e) {
+      debugPrint('disconnect error: $e');
+    }
+    _stopTimers();
+    _connectedAt = null;
+    _state     = VpnState.disconnected;
+    _status    = '';
+    _duration  = Duration.zero;
+    _downSpeed = '0 B/s';
+    _upSpeed   = '0 B/s';
+    notifyListeners();
+  }
+
+  // ─── Last Config (Reboot Recovery) ───────────────────────
+  Future<void> _saveLastConfig(String config) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_prefLastConfig, config);
+  }
+
+  Future<String?> getLastConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_prefLastConfig);
+  }
+
+  // ─── Build Config ─────────────────────────────────────────
+  Future<String?> _buildConfig(String cc) async {
+    switch (_mode) {
+      case VpnMode.warp:
+        _status = 'Fetching Warp keys...';
+        notifyListeners();
+        return await V2RayConfigs.warp(
+          countryCode: cc,
+          excludedApps: _excludedApps,
+          blockAds: _blockAds,
+        );
+
+      case VpnMode.psiphon:
+        _status = 'Building Psiphon config...';
+        notifyListeners();
+        return await V2RayConfigs.psiphon(
+          countryCode: cc,
+          excludedApps: _excludedApps,
+          blockAds: _blockAds,
+        );
+
+      case VpnMode.mahsa:
+        _status = 'Fetching Mahsa servers...';
+        notifyListeners();
+        return await V2RayConfigs.mahsa(
+          countryCode: cc,
+          excludedApps: _excludedApps,
+          blockAds: _blockAds,
+        );
+
+      case VpnMode.custom:
+        if (_customUrl == null || _customUrl!.isEmpty) return null;
+        _status = 'Fetching custom servers...';
+        notifyListeners();
+        return await V2RayConfigs.custom(
+          url: _customUrl!,
+          countryCode: cc,
+          excludedApps: _excludedApps,
+          blockAds: _blockAds,
+        );
     }
   }
 
@@ -129,261 +305,44 @@ class SingboxProvider extends ChangeNotifier {
   Future<void> setAutoSpeedTest(bool v) async {
     _autoSpeedTest = v;
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefAutoSpeed, v);
+    await prefs.setBool(_prefAutoSpeedTest, v);
     notifyListeners();
   }
 
-  // ─── Connect / Disconnect ─────────────────────────────────
-  Future<void> connect() async {
-    if (_state == VpnState.connecting || _state == VpnState.connected) {
-      await disconnect();
-      return;
-    }
-
-    _state  = VpnState.connecting;
-    _status = 'Connecting...';
-    notifyListeners();
-
-    try {
-      final config = await _buildConfig();
-      if (config == null) { _setFailed('No config available'); return; }
-
-      // طلب صلاحية VPN
-      if (!await _client.requestVPNPermission()) {
-        _setFailed('VPN permission denied');
-        return;
-      }
-
-      // الاتصال بالـ API الصحيح
-      await _client.connect(SessionOptions(
-        config: config,
-        networkMode: NetworkMode.vpn,
-        perAppProxy: PerAppProxyOptions(
-          mode: _excludedApps.isEmpty
-              ? PerAppProxyMode.off
-              : PerAppProxyMode.exclude,
-          packages: _excludedApps,
-        ),
-        notification: NotificationConfig(
-          title: 'OnyxVPN',
-          showTrafficStats: true,
-          showStopButton: true,
-          stopButtonLabel: 'Disconnect',
-        ),
-      ));
-
-    } catch (e) {
-      debugPrint('Connect error: $e');
-      _setFailed('Connection failed');
-    }
+  Future<void> refreshWarpKeys() async {
+    await WarpService.clearKeys();
+    await WarpService.getKeys(forceRefresh: true);
   }
 
-  Future<void> disconnect() async {
-    _verifyTimer?.cancel();
-    _statsTimer?.cancel();
-    await _client.disconnect();
-    _connectedAt = null;
-    _state     = VpnState.disconnected;
-    _status    = '';
-    _duration  = Duration.zero;
-    _downSpeed = '0 B/s';
-    _upSpeed   = '0 B/s';
-    await NotificationService.hide();
-    notifyListeners();
+  Future<void> refreshMahsa() async {
+    await MahsaService.clearCache();
+    await MahsaService.getLinks();
   }
 
-  // ─── Build Config ─────────────────────────────────────────
-  Future<String?> _buildConfig() async {
-    final country = GeoService.userCountryCode.toLowerCase().isNotEmpty
-        ? GeoService.userCountryCode.toLowerCase()
-        : 'iq';
-
-    switch (_mode) {
-      case VpnMode.warp:
-        return SingboxConfigs.warp(countryCode: country, excludedApps: _excludedApps);
-      case VpnMode.psiphon:
-        return SingboxConfigs.psiphon(countryCode: country, excludedApps: _excludedApps);
-      case VpnMode.mahsa:
-        return await _fetchAndBuild(SingboxConfigs.mahsaUrl, countryCode: country, excludedApps: _excludedApps);
-      case VpnMode.custom:
-        if (_customUrl == null || _customUrl!.isEmpty) return null;
-        return await _fetchAndBuild(_customUrl!, countryCode: country, excludedApps: _excludedApps);
-    }
-  }
-
-  Future<String?> _fetchAndBuild(String url, {required String countryCode, required List<String> excludedApps}) async {
-    try {
-      _status = 'Fetching servers...';
-      notifyListeners();
-
-      final res = await http.get(Uri.parse(url), headers: {'User-Agent': 'sing-box/1.0'})
-          .timeout(const Duration(seconds: 10));
-
-      if (res.statusCode != 200) return null;
-      final body = res.body.trim();
-
-      if (body.startsWith('{')) return body;
-
-      try {
-        final decoded = utf8.decode(base64.decode(body + '=' * ((4 - body.length % 4) % 4)));
-        if (decoded.startsWith('{')) return decoded;
-        return _linksToConfig(decoded.split('\n'), countryCode: countryCode, excludedApps: excludedApps);
-      } catch (_) {}
-
-      return _linksToConfig(body.split('\n'), countryCode: countryCode, excludedApps: excludedApps);
-    } catch (e) {
-      debugPrint('Fetch error: $e');
-      return null;
-    }
-  }
-
-  String? _linksToConfig(List<String> lines, {required String countryCode, required List<String> excludedApps}) {
-    final outbounds = <Map<String, dynamic>>[];
-    for (final line in lines) {
-      final l = line.trim();
-      if (l.isEmpty) continue;
-      final o = _parseLink(l);
-      if (o != null) outbounds.add(o);
-      if (outbounds.length >= 5) break;
-    }
-    if (outbounds.isEmpty) return null;
-    return SingboxConfigs.mahsaConfig(outbounds: outbounds, countryCode: countryCode, excludedApps: excludedApps);
-  }
-
-  Map<String, dynamic>? _parseLink(String link) {
-    try {
-      final uri = Uri.parse(link);
-      final tag = uri.fragment.isNotEmpty ? uri.fragment : 'srv-${link.hashCode.abs()}';
-
-      if (link.startsWith('vless://')) {
-        final p = uri.queryParameters;
-        return {
-          'type': 'vless', 'tag': tag, 'server': uri.host, 'server_port': uri.port,
-          'uuid': uri.userInfo, 'flow': p['flow'] ?? '',
-          'tls': {
-            'enabled': p['security'] == 'tls' || p['security'] == 'reality',
-            'server_name': p['sni'] ?? p['host'] ?? uri.host,
-            if (p['security'] == 'reality') 'reality': {'enabled': true, 'public_key': p['pbk'] ?? '', 'short_id': p['sid'] ?? ''},
-            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
-          },
-          'transport': _parseTransport(p),
-          'packet_encoding': 'xudp',
-        };
-      }
-      if (link.startsWith('trojan://')) {
-        final p = uri.queryParameters;
-        return {
-          'type': 'trojan', 'tag': tag, 'server': uri.host, 'server_port': uri.port,
-          'password': uri.userInfo,
-          'tls': {'enabled': true, 'server_name': p['sni'] ?? uri.host, 'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'}},
-        };
-      }
-      if (link.startsWith('vmess://')) {
-        final decoded = jsonDecode(utf8.decode(base64.decode(link.substring(8) + '=' * ((4 - link.substring(8).length % 4) % 4))));
-        return {
-          'type': 'vmess', 'tag': decoded['ps'] ?? tag, 'server': decoded['add'],
-          'server_port': int.tryParse(decoded['port'].toString()) ?? 443,
-          'uuid': decoded['id'], 'alter_id': int.tryParse(decoded['aid'].toString()) ?? 0,
-          'security': decoded['scy'] ?? 'auto', 'tls': {'enabled': decoded['tls'] == 'tls'},
-          if (decoded['net'] != 'tcp') 'transport': {'type': decoded['net'], 'path': decoded['path'] ?? '/', if (decoded['host'] != null) 'headers': {'Host': decoded['host']}},
-        };
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  Map<String, dynamic>? _parseTransport(Map<String, String> p) {
-    final type = p['type'];
-    if (type == null || type == 'tcp') return null;
-    if (type == 'ws') return {'type': 'ws', 'path': p['path'] ?? '/', if (p['host'] != null) 'headers': {'Host': p['host']}};
-    if (type == 'grpc') return {'type': 'grpc', 'service_name': p['serviceName'] ?? ''};
-    return {'type': type};
-  }
-
-  // ─── Callbacks من المكتبة ─────────────────────────────────
-  void _onStateChanged(ServiceState state) {
-    switch (state) {
-      case ServiceState.connected:
-        _state       = VpnState.connected;
-        _status      = '';
-        _connectedAt = DateTime.now();
-        _verifyTimer?.cancel();
-        _verifyTimer = Timer(const Duration(seconds: 3), _verifyAndFallback);
-        _startTimer();
-        NotificationService.showConnected(
-          modeName: _mode.name,
-          modeEmoji: VpnModeInfo.all.firstWhere((i) => i.mode == _mode).emoji,
-        );
-        break;
-      case ServiceState.disconnected:
-        if (_state == VpnState.connecting) {
-          _setFailed('Connection failed');
-        } else {
-          _state  = VpnState.disconnected;
-          _status = '';
-        }
-        _statsTimer?.cancel();
-        _connectedAt = null;
-        break;
-      case ServiceState.connecting:
-        _state  = VpnState.connecting;
-        _status = 'Connecting...';
-        break;
-      default:
-        break;
-    }
-    notifyListeners();
-  }
-
-  void _onTraffic(TrafficStats stats) {
-    _downSpeed = _formatSpeed(stats.downlinkBps);
-    _upSpeed   = _formatSpeed(stats.uplinkBps);
-    notifyListeners();
-  }
-
-  // ─── فحص الاتصال الحقيقي ─────────────────────────────────
-  Future<void> _verifyAndFallback() async {
-    final works = await _verifyConnection();
-    if (!works && _state == VpnState.connected) {
-      await disconnect();
-      if (_mode == VpnMode.warp) {
-        _mode   = VpnMode.psiphon;
-        _status = 'Warp failed, trying Psiphon...';
-        notifyListeners();
-        await Future.delayed(const Duration(seconds: 1));
-        await connect();
-      } else {
-        _setFailed('Server unreachable, try another mode');
-      }
-    }
-  }
-
-  Future<bool> _verifyConnection() async {
-    const urls = ['https://www.google.com/generate_204', 'https://connectivitycheck.gstatic.com/generate_204'];
-    for (final url in urls) {
-      try {
-        final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 6));
-        if (res.statusCode == 204 || res.statusCode == 200) return true;
-      } catch (_) { continue; }
-    }
-    return false;
-  }
-
-  void _setFailed(String msg) {
-    _state  = VpnState.failed;
-    _status = msg;
-    _statsTimer?.cancel();
-    notifyListeners();
-  }
-
+  // ─── Timers ───────────────────────────────────────────────
   void _startTimer() {
-    _statsTimer?.cancel();
-    _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    _durationTimer?.cancel();
+    _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_connectedAt != null) {
         _duration = DateTime.now().difference(_connectedAt!);
         notifyListeners();
       }
     });
+  }
+
+  void _stopTimers() {
+    _durationTimer?.cancel();
+    _statsTimer?.cancel();
+    _durationTimer = null;
+    _statsTimer    = null;
+    _duration      = Duration.zero;
+  }
+
+  void _setFailed(String msg) {
+    _state  = VpnState.failed;
+    _status = msg;
+    _stopTimers();
+    notifyListeners();
   }
 
   String get formattedTime {
@@ -393,18 +352,10 @@ class SingboxProvider extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  String _formatSpeed(int bps) {
-    final bytes = bps ~/ 8;
-    if (bytes <= 0) return '0 B/s';
-    if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB/s';
-    return '$bytes B/s';
-  }
-
   @override
   void dispose() {
-    _statsTimer?.cancel();
-    _verifyTimer?.cancel();
+    _statusSub?.cancel();
+    _stopTimers();
     super.dispose();
   }
 }
