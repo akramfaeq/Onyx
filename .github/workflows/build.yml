@@ -25,15 +25,13 @@ jobs:
     - name: Set up Flutter
       uses: subosito/flutter-action@v2
       with:
-        channel: 'stable'
+        flutter-version: '3.24.5'
         cache: true
 
     - name: Update Gradle version
       run: |
-        sed -i 's#gradle-8.3-all.zip#gradle-8.14-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+        sed -i 's#gradle-8.3-all.zip#gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
         perl -0pi -e 's/\n\s*kotlinOptions\s*\{[^}]*\}\n/\n/' android/app/build.gradle.kts
-        sed -i 's/compileSdk = 35/compileSdk = 36/' android/app/build.gradle.kts
-        echo "android.newDsl=false" >> android/gradle.properties
 
     - name: Install dependencies
       run: flutter pub get
