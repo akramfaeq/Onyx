@@ -28,10 +28,8 @@ jobs:
         channel: 'stable'
         cache: true
 
-    - name: Update Gradle, AGP and Kotlin versions
+    - name: Update Gradle version
       run: |
-        sed -i 's/version "8.1.0" apply false/version "8.11.1" apply false/' android/settings.gradle.kts
-        sed -i 's/version "2.1.0" apply false/version "2.2.20" apply false/' android/settings.gradle.kts
         sed -i 's#gradle-8.3-all.zip#gradle-8.14-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
         perl -0pi -e 's/\n\s*kotlinOptions\s*\{[^}]*\}\n/\n/' android/app/build.gradle.kts
         sed -i 's/compileSdk = 35/compileSdk = 36/' android/app/build.gradle.kts
@@ -46,7 +44,7 @@ jobs:
       run: |
         if [ -n "$KEYSTORE_BASE64" ]; then
           echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
-        elif [ ! -f android/app/upload-keystore.jks ]; then
+        else
           keytool -genkeypair -keystore android/app/upload-keystore.jks \
             -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass nemo112233 -keypass nemo112233 \
@@ -56,7 +54,6 @@ jobs:
     - name: Build APK
       run: flutter build apk --release
 
-    # ── بدون upload-artifact عشان ما تخلص المساحة ──
     - name: Publish APK to Releases
       uses: softprops/action-gh-release@v2
       with:
