@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import '../services/vpn_provider.dart';
+import '../services/singbox_provider.dart';
+import '../models/vpn_mode.dart';
 import '../services/ads_service.dart';
-import 'servers_screen.dart';
-import 'info_screen.dart';
-import 'debug_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -12,15 +11,15 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0A14),
+      backgroundColor: const Color(0xFF08080F),
       body: Column(
         children: [
           Expanded(
             child: SafeArea(
               child: Column(
                 children: [
-                  _TopBar(),
-                  Expanded(child: _MainContent()),
+                  const _TopBar(),
+                  Expanded(child: _Body()),
                 ],
               ),
             ),
@@ -34,6 +33,8 @@ class HomeScreen extends StatelessWidget {
 
 // ─── Top Bar ──────────────────────────────────────────────────
 class _TopBar extends StatelessWidget {
+  const _TopBar();
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -41,363 +42,274 @@ class _TopBar extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          GestureDetector(
-            onLongPress: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const DebugScreen()),
-            ),
-            child: RichText(
-              text: const TextSpan(children: [
-                TextSpan(
-                  text: 'Onyx',
-                  style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-                TextSpan(
-                  text: 'VPN',
-                  style: TextStyle(
-                      color: Color(0xFF7B5CF0),
-                      fontSize: 24,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.5),
-                ),
-              ]),
-            ),
+          RichText(
+            text: const TextSpan(children: [
+              TextSpan(
+                text: 'Onyx',
+                style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.8),
+              ),
+              TextSpan(
+                text: 'VPN',
+                style: TextStyle(color: Color(0xFF8B5CF6), fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.8),
+              ),
+            ]),
           ),
-          Row(
-            children: [
-              // بادج الدولة / Iran Mode
-              Consumer<VpnProvider>(
-                builder: (_, vpn, __) {
-                  if (vpn.userCountry.isEmpty) return const SizedBox.shrink();
-                  final isRestricted = vpn.isRestrictedUser;
-                  return Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: isRestricted
-                          ? const Color(0xFFEF4444).withValues(alpha: 0.12)
-                          : const Color(0xFF10B981).withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isRestricted
-                            ? const Color(0xFFEF4444).withValues(alpha: 0.4)
-                            : const Color(0xFF10B981).withValues(alpha: 0.3),
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (isRestricted) ...[
-                          const Icon(Icons.shield_rounded,
-                              size: 11, color: Color(0xFFEF4444)),
-                          const SizedBox(width: 3),
-                          const Text(
-                            'Bypass Mode',
-                            style: TextStyle(
-                                color: Color(0xFFEF4444),
-                                fontSize: 10,
-                                fontWeight: FontWeight.w700),
-                          ),
-                        ] else ...[
-                          Text(
-                            _countryFlag(vpn.userCountry),
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            vpn.userCountry,
-                            style: const TextStyle(
-                                color: Color(0xFF10B981),
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600),
-                          ),
-                        ],
-                      ],
-                    ),
-                  );
-                },
+          GestureDetector(
+            onTap: () => Navigator.pushNamed(context, '/info'),
+            child: Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: const Color(0xFF111120),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF1E1E35)),
               ),
-              GestureDetector(
-                onTap: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const InfoScreen())),
-                child: Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF12121E),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.info_outline_rounded,
-                      color: Color(0xFF7B5CF0), size: 18),
-                ),
-              ),
-            ],
+              child: const Icon(Icons.info_outline_rounded, color: Color(0xFF6D28D9), size: 18),
+            ),
           ),
         ],
       ),
     );
   }
-
-  String _countryFlag(String code) {
-    if (code.length != 2) return '🌐';
-    return code.toUpperCase().split('').map(
-      (c) => String.fromCharCode(c.codeUnitAt(0) + 127397),
-    ).join();
-  }
 }
 
-// ─── Main Content ─────────────────────────────────────────────
-class _MainContent extends StatelessWidget {
+// ─── Body ─────────────────────────────────────────────────────
+class _Body extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Consumer<VpnProvider>(
-      builder: (context, vpn, _) {
-        return Column(
+    return Consumer<SingboxProvider>(
+      builder: (_, vpn, __) => SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Column(
           children: [
-            const SizedBox(height: 28),
-            _PowerOrb(vpn: vpn),
-            const SizedBox(height: 16),
-            _StatusChip(vpn: vpn),
+            _OrbSection(vpn: vpn),
             const SizedBox(height: 20),
             _StatsRow(vpn: vpn),
+            const SizedBox(height: 20),
+            _Divider(),
             const SizedBox(height: 16),
-            _ServersPanel(vpn: vpn),
+            const _ModeLabel(),
+            const SizedBox(height: 12),
+            _ModeGrid(vpn: vpn),
+            const SizedBox(height: 24),
           ],
-        );
-      },
+        ),
+      ),
     );
   }
 }
 
-// ─── Power Orb ────────────────────────────────────────────────
-class _PowerOrb extends StatefulWidget {
-  final VpnProvider vpn;
-  const _PowerOrb({required this.vpn});
+// ─── Orb Section ──────────────────────────────────────────────
+class _OrbSection extends StatefulWidget {
+  final SingboxProvider vpn;
+  const _OrbSection({required this.vpn});
 
   @override
-  State<_PowerOrb> createState() => _PowerOrbState();
+  State<_OrbSection> createState() => _OrbSectionState();
 }
 
-class _PowerOrbState extends State<_PowerOrb>
-    with SingleTickerProviderStateMixin {
+class _OrbSectionState extends State<_OrbSection> with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _pulse;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-        vsync: this, duration: const Duration(seconds: 2))
+    _ctrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))
       ..repeat(reverse: true);
-    _pulse = Tween(begin: 1.0, end: 1.08)
+    _pulse = Tween(begin: 1.0, end: 1.06)
         .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
   }
 
   @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+  void dispose() { _ctrl.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final vpn = widget.vpn;
     final connected  = vpn.isConnected;
     final connecting = vpn.isConnecting;
-    final failed     = vpn.isFailed;
-    final loading    = vpn.loadingServers;
 
-    final color = failed
+    final color = vpn.isFailed
         ? const Color(0xFFEF4444)
         : connecting
             ? const Color(0xFFF59E0B)
             : connected
                 ? const Color(0xFF10B981)
-                : const Color(0xFF7B5CF0);
+                : const Color(0xFF8B5CF6);
 
-    String label;
-    if (loading)         label = 'Loading...';
-    else if (failed)     label = vpn.statusMessage;
-    else if (connected)  label = 'Tap to\ndisconnect';
-    else if (connecting) label = vpn.statusMessage;
-    else                 label = 'Quick\nConnect';
+    final label = connected
+        ? 'TAP TO\nDISCONNECT'
+        : connecting
+            ? 'CONNECTING'
+            : 'CONNECT';
 
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (_, __) {
-        final active = connected || connecting;
-        final scale  = active ? _pulse.value : 1.0;
-        return Transform.scale(
-          scale: scale,
-          child: GestureDetector(
-            onTap: () {
-              if (loading || failed) return;
-              if (connected || connecting) {
-                vpn.disconnect();
-              } else {
-                vpn.connectFastest();
-              }
-            },
-            child: SizedBox(
-              width: 170, height: 170,
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  if (connected || connecting)
+    return Column(
+      children: [
+        AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, __) => Transform.scale(
+            scale: connected || connecting ? _pulse.value : 1.0,
+            child: GestureDetector(
+              onTap: () {
+                HapticFeedback.lightImpact();
+                vpn.connect();
+              },
+              child: SizedBox(
+                width: 172, height: 172,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Glow ring
+                    if (connected || connecting)
+                      Container(
+                        width: 172, height: 172,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(color: color.withOpacity(0.1), width: 18),
+                        ),
+                      ),
+                    // Ring 1
                     Container(
-                      width: 170, height: 170,
+                      width: 148, height: 148,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        border: Border.all(
-                            color: color.withValues(alpha: 0.12), width: 18),
+                        border: Border.all(color: color.withOpacity(0.18), width: 1),
                       ),
                     ),
-                  Container(
-                    width: 142, height: 142,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                          color: color.withValues(alpha: 0.25), width: 2),
+                    // Ring 2
+                    Container(
+                      width: 124, height: 124,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(color: color.withOpacity(0.28), width: 1),
+                      ),
                     ),
-                  ),
-                  if (connecting)
-                    SizedBox(
-                      width: 142, height: 142,
-                      child: CircularProgressIndicator(
-                          color: color, strokeWidth: 2),
-                    ),
-                  Container(
-                    width: 110, height: 110,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xFF12121E),
-                      boxShadow: [
-                        BoxShadow(
-                          color: color.withValues(
-                              alpha: connected ? 0.4 : 0.2),
-                          blurRadius: 30,
-                          spreadRadius: 2,
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.power_settings_new_rounded,
-                            size: 36, color: color),
-                        const SizedBox(height: 4),
-                        Text(
-                          label,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: color.withValues(alpha: 0.85),
-                            fontSize: 9,
-                            fontWeight: FontWeight.w600,
-                            height: 1.3,
+                    // Progress ring
+                    if (connecting)
+                      SizedBox(
+                        width: 124, height: 124,
+                        child: CircularProgressIndicator(color: color, strokeWidth: 1.5),
+                      ),
+                    // Core
+                    Container(
+                      width: 100, height: 100,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: const Color(0xFF0D0D1F),
+                        border: Border.all(color: color.withOpacity(0.35), width: 1),
+                        boxShadow: [
+                          BoxShadow(color: color.withOpacity(connected ? 0.3 : 0.15), blurRadius: 28, spreadRadius: 1),
+                        ],
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.power_settings_new_rounded, color: color, size: 32),
+                          const SizedBox(height: 5),
+                          Text(
+                            label,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: color.withOpacity(0.8),
+                              fontSize: 8,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.8,
+                              height: 1.4,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
-        );
-      },
-    );
-  }
-}
-
-// ─── Status Chip ──────────────────────────────────────────────
-class _StatusChip extends StatelessWidget {
-  final VpnProvider vpn;
-  const _StatusChip({required this.vpn});
-
-  @override
-  Widget build(BuildContext context) {
-    final connected  = vpn.isConnected;
-    final connecting = vpn.isConnecting;
-
-    final color = connecting
-        ? const Color(0xFFF59E0B)
-        : connected
-            ? const Color(0xFF10B981)
-            : const Color(0xFF6B7280);
-
-    final text = connected
-        ? vpn.selectedServer?.countryName ?? 'Connected'
-        : vpn.statusMessage.isNotEmpty
-            ? vpn.statusMessage
-            : 'Not Connected';
-
-    final flag = (connected || connecting)
-        ? vpn.selectedServer?.flag ?? ''
-        : '';
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-              width: 7, height: 7,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 8),
-          if (flag.isNotEmpty) ...[
-            Text(flag, style: const TextStyle(fontSize: 14)),
-            const SizedBox(width: 6),
-          ],
-          Text(text,
-              style: TextStyle(
-                  color: color,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600)),
-        ],
-      ),
+        ),
+        const SizedBox(height: 18),
+        // Status pill
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          decoration: BoxDecoration(
+            color: const Color(0xFF111120),
+            borderRadius: BorderRadius.circular(100),
+            border: Border.all(
+              color: connected
+                  ? const Color(0xFF10B981).withOpacity(0.35)
+                  : const Color(0xFF1E1E35),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6, height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: connected
+                      ? const Color(0xFF10B981)
+                      : connecting
+                          ? const Color(0xFFF59E0B)
+                          : const Color(0xFF374151),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                connected
+                    ? 'Connected · ${vpn.formattedTime}'
+                    : vpn.isFailed
+                        ? vpn.status
+                        : connecting
+                            ? vpn.status
+                            : 'Not connected',
+                style: TextStyle(
+                  color: connected
+                      ? const Color(0xFF10B981)
+                      : const Color(0xFF6B7280),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
 
 // ─── Stats Row ────────────────────────────────────────────────
 class _StatsRow extends StatelessWidget {
-  final VpnProvider vpn;
+  final SingboxProvider vpn;
   const _StatsRow({required this.vpn});
 
   @override
   Widget build(BuildContext context) {
-    final active = vpn.isConnected;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Row(
         children: [
           _StatCard(
-              icon: Icons.arrow_downward_rounded,
-              label: 'Download',
-              value: active ? vpn.downloadSpeed : '--',
-              color: const Color(0xFF10B981)),
-          const SizedBox(width: 10),
+            icon: Icons.arrow_downward_rounded,
+            label: 'DOWN',
+            value: vpn.isConnected ? vpn.downSpeed : '--',
+            color: const Color(0xFF10B981),
+          ),
+          const SizedBox(width: 8),
           _StatCard(
-              icon: Icons.arrow_upward_rounded,
-              label: 'Upload',
-              value: active ? vpn.uploadSpeed : '--',
-              color: const Color(0xFF7B5CF0)),
-          const SizedBox(width: 10),
+            icon: Icons.arrow_upward_rounded,
+            label: 'UP',
+            value: vpn.isConnected ? vpn.upSpeed : '--',
+            color: const Color(0xFF8B5CF6),
+          ),
+          const SizedBox(width: 8),
           _StatCard(
-              icon: Icons.timer_rounded,
-              label: 'Time',
-              value: active ? vpn.formattedTime : '--:--',
-              color: const Color(0xFF3B82F6)),
+            icon: Icons.timer_rounded,
+            label: 'TIME',
+            value: vpn.isConnected ? vpn.formattedTime : '--:--',
+            color: const Color(0xFF3B82F6),
+          ),
         ],
       ),
     );
@@ -409,356 +321,166 @@ class _StatCard extends StatelessWidget {
   final String label;
   final String value;
   final Color color;
-  const _StatCard(
-      {required this.icon,
-      required this.label,
-      required this.value,
-      required this.color});
+  const _StatCard({required this.icon, required this.label, required this.value, required this.color});
 
   @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        decoration: BoxDecoration(
-          color: const Color(0xFF12121E),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: color, size: 18),
-            const SizedBox(height: 6),
-            Text(value,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 2),
-            Text(label,
-                style: const TextStyle(
-                    color: Color(0xFF6B7280), fontSize: 10)),
-          ],
-        ),
+  Widget build(BuildContext context) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E0E1C),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF1A1A2E)),
       ),
-    );
-  }
+      child: Column(
+        children: [
+          Icon(icon, color: color, size: 15),
+          const SizedBox(height: 6),
+          Text(value, style: const TextStyle(color: Color(0xFFD1D5DB), fontSize: 11, fontWeight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 3),
+          Text(label, style: const TextStyle(color: Color(0xFF374151), fontSize: 9, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+        ],
+      ),
+    ),
+  );
 }
 
-// ─── Servers Panel ────────────────────────────────────────────
-enum _ServerFilter { all, port443, fast }
-
-class _ServersPanel extends StatefulWidget {
-  final VpnProvider vpn;
-  const _ServersPanel({required this.vpn});
-
+// ─── Divider ──────────────────────────────────────────────────
+class _Divider extends StatelessWidget {
   @override
-  State<_ServersPanel> createState() => _ServersPanelState();
+  Widget build(BuildContext context) => Container(
+    margin: const EdgeInsets.symmetric(horizontal: 20),
+    height: 1,
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        colors: [Colors.transparent, Color(0xFF1E1E35), Colors.transparent],
+      ),
+    ),
+  );
 }
 
-class _ServersPanelState extends State<_ServersPanel> {
-  _ServerFilter _filter = _ServerFilter.all;
+class _ModeLabel extends StatelessWidget {
+  const _ModeLabel();
 
   @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (widget.vpn.servers.isEmpty) widget.vpn.fetchServers();
-    });
-  }
+  Widget build(BuildContext context) => const Padding(
+    padding: EdgeInsets.symmetric(horizontal: 22),
+    child: Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        'SELECT MODE',
+        style: TextStyle(color: Color(0xFF374151), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1),
+      ),
+    ),
+  );
+}
 
-  List<VpnServer> _filtered(VpnProvider vpn) {
-    switch (_filter) {
-      case _ServerFilter.port443:
-        return vpn.serversPort443;
-      case _ServerFilter.fast:
-        return vpn.serversFast;
-      case _ServerFilter.all:
-        return vpn.servers;
-    }
-  }
+// ─── Mode Grid - الـ 4 خيارات ─────────────────────────────────
+class _ModeGrid extends StatelessWidget {
+  final SingboxProvider vpn;
+  const _ModeGrid({required this.vpn});
 
   @override
   Widget build(BuildContext context) {
-    final vpn = widget.vpn;
-
-    return Expanded(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: GridView.count(
+        crossAxisCount: 2,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        childAspectRatio: 1.3,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
         children: [
-          const SizedBox(height: 4),
-
-          // ── بادجات الفلتر مع إضافة Bypass لو دولة محجوبة ──
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Row(
-              children: [
-                _FilterBadge(
-                  label: 'All',
-                  icon: Icons.language_rounded,
-                  active: _filter == _ServerFilter.all,
-                  activeColor: const Color(0xFF7B5CF0),
-                  onTap: () => setState(() => _filter = _ServerFilter.all),
-                ),
-                const SizedBox(width: 8),
-                _FilterBadge(
-                  // لو دولة محجوبة → نسميه "Bypass" بدل "Port 443"
-                  label: vpn.isRestrictedUser ? 'Bypass' : 'Port 443',
-                  icon: vpn.isRestrictedUser
-                      ? Icons.shield_rounded
-                      : Icons.lock_outline_rounded,
-                  active: _filter == _ServerFilter.port443,
-                  activeColor: vpn.isRestrictedUser
-                      ? const Color(0xFFEF4444)
-                      : const Color(0xFF1D9E75),
-                  onTap: () =>
-                      setState(() => _filter = _ServerFilter.port443),
-                ),
-                const SizedBox(width: 8),
-                _FilterBadge(
-                  label: 'Fast',
-                  icon: Icons.bolt_rounded,
-                  active: _filter == _ServerFilter.fast,
-                  activeColor: const Color(0xFFF48120),
-                  onTap: () => setState(() => _filter = _ServerFilter.fast),
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ── قائمة السيرفرات ────────────────────────────────
-          Expanded(
-            child: vpn.loadingServers
-                ? const Center(
-                    child: CircularProgressIndicator(
-                        color: Color(0xFF7B5CF0)))
-                : vpn.servers.isEmpty
-                    ? _emptyView(vpn)
-                    : Builder(builder: (ctx) {
-                        final list = _filtered(vpn);
-                        if (list.isEmpty) {
-                          return Center(
-                            child: Text(
-                              'No servers match this filter',
-                              style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.3),
-                                  fontSize: 13),
-                            ),
-                          );
-                        }
-                        final displayList = list.take(8).toList();
-                        return RefreshIndicator(
-                          color: const Color(0xFF7B5CF0),
-                          backgroundColor: const Color(0xFF12121E),
-                          onRefresh: () =>
-                              vpn.fetchServers(forceRefresh: true),
-                          child: ListView.separated(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 24),
-                            itemCount: displayList.length,
-                            separatorBuilder: (_, __) =>
-                                const SizedBox(height: 8),
-                            itemBuilder: (_, i) {
-                              final s   = displayList[i];
-                              final sel = vpn.selectedServer?.ip == s.ip;
-                              return _ServerTile(
-                                    server: s,
-                                    selected: sel,
-                                    connecting: vpn.isConnecting && sel,
-                                    connected: vpn.isConnected && sel,
-                                    onTap: () => vpn.connectTo(s),
-                                  );
-                            },
-                          ),
-                        );
-                      }),
-          ),
+          _ModeCard(info: VpnModeInfo.warp,    vpn: vpn, iconBg: const Color(0xFF1A1200), tagColor: const Color(0xFFF97316)),
+          _ModeCard(info: VpnModeInfo.psiphon, vpn: vpn, iconBg: const Color(0xFF001428), tagColor: const Color(0xFF60A5FA)),
+          _ModeCard(info: VpnModeInfo.mahsa,   vpn: vpn, iconBg: const Color(0xFF1A0028), tagColor: const Color(0xFFF472B6)),
+          _AddCard(vpn: vpn),
         ],
       ),
     );
   }
-
-  Widget _emptyView(VpnProvider vpn) {
-    return RefreshIndicator(
-      color: const Color(0xFF7B5CF0),
-      backgroundColor: const Color(0xFF12121E),
-      onRefresh: () => vpn.fetchServers(forceRefresh: true),
-      child: ListView(children: [
-        const SizedBox(height: 60),
-        Column(
-          children: [
-            const Icon(Icons.cloud_off_rounded,
-                color: Color(0xFF6B7280), size: 44),
-            const SizedBox(height: 10),
-            Text(
-              vpn.serversError ?? 'No servers found.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  color: Color(0xFF6B7280), fontSize: 13),
-            ),
-            const SizedBox(height: 6),
-            const Text('Pull down to retry',
-                style: TextStyle(
-                    color: Color(0xFF7B5CF0), fontSize: 12)),
-          ],
-        ),
-      ]),
-    );
-  }
 }
 
-// ─── Filter Badge ─────────────────────────────────────────────
-class _FilterBadge extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool active;
-  final Color activeColor;
-  final VoidCallback onTap;
-
-  const _FilterBadge({
-    required this.label,
-    required this.icon,
-    required this.active,
-    required this.activeColor,
-    required this.onTap,
-  });
+class _ModeCard extends StatelessWidget {
+  final VpnModeInfo info;
+  final SingboxProvider vpn;
+  final Color iconBg;
+  final Color tagColor;
+  const _ModeCard({required this.info, required this.vpn, required this.iconBg, required this.tagColor});
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          height: 52,
-          decoration: BoxDecoration(
-            color: active
-                ? activeColor.withValues(alpha: 0.12)
-                : const Color(0xFF12121E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: active
-                  ? activeColor.withValues(alpha: 0.4)
-                  : const Color(0xFF1E1E2E),
-              width: 1.5,
-            ),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon,
-                  size: 16,
-                  color: active ? activeColor : const Color(0xFF6B7280)),
-              const SizedBox(height: 3),
-              Text(label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: active ? activeColor : const Color(0xFF6B7280),
-                  )),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─── Server Tile ──────────────────────────────────────────────
-class _ServerTile extends StatelessWidget {
-  final VpnServer server;
-  final bool selected;
-  final bool connecting;
-  final bool connected;
-  final VoidCallback onTap;
-
-  const _ServerTile({
-    required this.server,
-    required this.selected,
-    required this.connecting,
-    required this.connected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final borderColor = connected
-        ? const Color(0xFF10B981)
-        : connecting
-            ? const Color(0xFFF59E0B)
-            : selected
-                ? const Color(0xFF7B5CF0)
-                : Colors.transparent;
+    final selected = vpn.mode == info.mode;
 
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        HapticFeedback.selectionClick();
+        vpn.selectMode(info.mode);
+      },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
         decoration: BoxDecoration(
-          color: selected
-              ? const Color(0xFF15152A)
-              : const Color(0xFF12121E),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: borderColor, width: 1.5),
+          color: selected ? const Color(0xFF11112A) : const Color(0xFF0E0E1C),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? const Color(0xFF8B5CF6).withOpacity(0.45) : const Color(0xFF1A1A2E),
+            width: 1.5,
+          ),
+          boxShadow: selected
+              ? [BoxShadow(color: const Color(0xFF8B5CF6).withOpacity(0.08), blurRadius: 20)]
+              : [],
         ),
-        child: Row(
+        child: Stack(
           children: [
-            Text(server.flag, style: const TextStyle(fontSize: 26)),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(server.countryName,
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w500)),
-                      if (server.isHardToBlock) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 5, vertical: 1),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1D9E75)
-                                .withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(
-                                color: const Color(0xFF1D9E75)
-                                    .withValues(alpha: 0.4)),
-                          ),
-                          child: const Text('TLS',
-                              style: TextStyle(
-                                  color: Color(0xFF1D9E75),
-                                  fontSize: 9,
-                                  fontWeight: FontWeight.w700)),
-                        ),
-                      ],
-                    ],
+            // Top accent line
+            if (selected)
+              Positioned(
+                top: -14, left: -14, right: -14,
+                child: Container(
+                  height: 2,
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.transparent, Color(0xFF8B5CF6), Colors.transparent],
+                    ),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
                   ),
-                  Text(
-                    '${server.effectivePing > 0 && server.effectivePing < 9999 ? server.effectivePing : server.ping} ms · ${server.pingLabel}',
-                    style: const TextStyle(
-                        color: Color(0xFF6B7280), fontSize: 11)),
-                ],
+                ),
               ),
+            // Tag
+            if (info.tag.isNotEmpty)
+              Positioned(
+                top: 0, right: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: tagColor.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: tagColor.withOpacity(0.25)),
+                  ),
+                  child: Text(info.tag, style: TextStyle(color: tagColor, fontSize: 9, fontWeight: FontWeight.w700)),
+                ),
+              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  width: 38, height: 38,
+                  decoration: BoxDecoration(color: iconBg, borderRadius: BorderRadius.circular(12)),
+                  child: Center(child: Text(info.emoji, style: const TextStyle(fontSize: 20))),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(info.name, style: const TextStyle(color: Color(0xFFE5E7EB), fontSize: 14, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(info.subtitle, style: const TextStyle(color: Color(0xFF4B5563), fontSize: 10, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ],
             ),
-            if (connecting)
-              const SizedBox(
-                  width: 18, height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Color(0xFFF59E0B)))
-            else if (connected)
-              const Icon(Icons.check_circle_rounded,
-                  color: Color(0xFF10B981), size: 20)
-            else
-              _SignalBars(bars: server.bars),
           ],
         ),
       ),
@@ -766,27 +488,121 @@ class _ServerTile extends StatelessWidget {
   }
 }
 
-class _SignalBars extends StatelessWidget {
-  final int bars;
-  const _SignalBars({required this.bars});
+// ─── Add Card ─────────────────────────────────────────────────
+class _AddCard extends StatelessWidget {
+  final SingboxProvider vpn;
+  const _AddCard({required this.vpn});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: List.generate(4, (i) {
-        return Container(
-          width: 4,
-          height: 5.0 + (i * 3.5),
-          margin: const EdgeInsets.only(left: 2),
-          decoration: BoxDecoration(
-            color: i < bars
-                ? const Color(0xFF7B5CF0)
-                : const Color(0xFF2A2A3E),
-            borderRadius: BorderRadius.circular(2),
+    final hasUrl = vpn.customUrl != null && vpn.customUrl!.isNotEmpty;
+    final selected = vpn.mode == VpnMode.custom;
+
+    return GestureDetector(
+      onTap: () => _showAddDialog(context),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF11112A) : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected
+                ? const Color(0xFF8B5CF6).withOpacity(0.45)
+                : const Color(0xFF1E1E35),
+            width: selected ? 1.5 : 1.5,
+            style: selected ? BorderStyle.solid : BorderStyle.solid,
           ),
-        );
-      }),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              width: 38, height: 38,
+              decoration: BoxDecoration(
+                color: const Color(0xFF8B5CF6).withOpacity(0.08),
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0xFF8B5CF6).withOpacity(0.35)),
+              ),
+              child: const Icon(Icons.add_rounded, color: Color(0xFF8B5CF6), size: 18),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              hasUrl ? 'Custom' : 'Add Link',
+              style: const TextStyle(color: Color(0xFF6D28D9), fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            Text(
+              hasUrl ? 'Tap to change' : 'Subscription URL',
+              style: const TextStyle(color: Color(0xFF374151), fontSize: 10),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAddDialog(BuildContext context) {
+    final vpn = context.read<SingboxProvider>();
+    final ctrl = TextEditingController(text: vpn.customUrl ?? '');
+
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF111120),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Add Subscription', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Paste your subscription URL or v2ray link:', style: TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'https://example.com/sub.txt',
+                hintStyle: const TextStyle(color: Color(0xFF374151)),
+                filled: true,
+                fillColor: const Color(0xFF0E0E1C),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF1E1E35)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF1E1E35)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFF8B5CF6)),
+                ),
+              ),
+              maxLines: 3,
+              minLines: 1,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (ctrl.text.trim().isNotEmpty) {
+                vpn.setCustomUrl(ctrl.text.trim());
+                vpn.selectMode(VpnMode.custom);
+              }
+              Navigator.pop(context);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF8B5CF6),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Save', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
     );
   }
 }

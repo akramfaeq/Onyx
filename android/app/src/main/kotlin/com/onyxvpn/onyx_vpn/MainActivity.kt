@@ -1,83 +1,88 @@
-package com.onyxvpn.onyx_vpn
+package com.onyxvpn
 
-import android.app.Activity
-import android.content.BroadcastReceiver
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.net.VpnService
 import android.os.Build
-import android.os.Bundle
+import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
 
-    companion object {
-        private const val VPN_PERMISSION_CODE = 1001
-        private const val CHANNEL = "com.onyxvpn.notification"
-    }
-
-    private var methodChannel: MethodChannel? = null
-
-    private val disconnectReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            methodChannel?.invokeMethod("disconnect", null)
-        }
-    }
+    private val NOTIF_CHANNEL  = "com.onyxvpn.notification"
+    private val NOTIF_ID       = 1001
+    private val CHANNEL_ID     = "onyx_vpn_channel"
+    private val CHANNEL_NAME   = "OnyxVPN Status"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        methodChannel = MethodChannel(
+
+        createNotificationChannel()
+
+        MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            CHANNEL
-        ).apply {
-            setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "show" -> {
-                        val serverName = call.argument<String>("server_name") ?: "VPN"
-                        val ping = call.argument<Int>("ping") ?: -1
-                        VpnNotificationService.show(this@MainActivity, serverName, ping)
-                        result.success(null)
-                    }
-                    "hide" -> {
-                        VpnNotificationService.hide(this@MainActivity)
-                        result.success(null)
-                    }
-                    else -> result.notImplemented()
+            NOTIF_CHANNEL
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "show" -> {
+                    val title = call.argument<String>("title") ?: "OnyxVPN Connected"
+                    val body  = call.argument<String>("body")  ?: "Tap to disconnect"
+                    showNotification(title, body)
+                    result.success(null)
                 }
+                "hide" -> {
+                    hideNotification()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
             }
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // اطلب إذن VPN عند أول فتح للتطبيق
-        val vpnIntent = VpnService.prepare(this)
-        if (vpnIntent != null) {
-            startActivityForResult(vpnIntent, VPN_PERMISSION_CODE)
-        }
-        // سجّل receiver هنا بدل onStart — يبقى شغّال حتى لو التطبيق بالخلفية
-        val filter = IntentFilter("com.onyxvpn.DISCONNECT")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(disconnectReceiver, filter, RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(disconnectReceiver, filter)
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW // لا يصدر صوت
+            ).apply {
+                description = "OnyxVPN connection status"
+                setShowBadge(false)
+            }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(channel)
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        // ألغِ التسجيل هنا بدل onStop — لا يموت إلا لما يُقتل التطبيق نهائياً
-        try { unregisterReceiver(disconnectReceiver) } catch (_: Exception) {}
+    private fun showNotification(title: String, body: String) {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification) // ← نضيف هذا الأيقون
+            .setContentTitle(title)
+            .setContentText(body)
+            .setOngoing(true)         // لا يُغلق بالسحب
+            .setContentIntent(pendingIntent)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setColor(0xFF8B5CF6.toInt())
+            .build()
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(NOTIF_ID, notification)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_PERMISSION_CODE && resultCode == Activity.RESULT_OK) {
-            // إذن VPN تم ✅
-        }
+    private fun hideNotification() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(NOTIF_ID)
     }
 }
