@@ -13,17 +13,16 @@ enum VpnState { disconnected, connecting, connected, failed }
 
 class SingboxProvider extends ChangeNotifier {
 
-  // ─── State ────────────────────────────────────────────────
-  VpnState        _state          = VpnState.disconnected;
-  VpnMode         _mode           = VpnMode.warp;
-  String          _status         = '';
-  String          _downSpeed      = '0 B/s';
-  String          _upSpeed        = '0 B/s';
+  VpnState        _state         = VpnState.disconnected;
+  VpnMode         _mode          = VpnMode.warp;
+  String          _status        = '';
+  String          _downSpeed     = '0 B/s';
+  String          _upSpeed       = '0 B/s';
   String?         _customUrl;
-  Duration        _duration       = Duration.zero;
-  List<String>    _excludedApps   = [];
-  bool            _blockAds       = true;
-  bool            _autoSpeedTest  = true;
+  Duration        _duration      = Duration.zero;
+  List<String>    _excludedApps  = [];
+  bool            _blockAds      = true;
+  bool            _autoSpeedTest = true;
 
   VpnState     get state         => _state;
   VpnMode      get mode          => _mode;
@@ -40,8 +39,8 @@ class SingboxProvider extends ChangeNotifier {
   bool get isConnecting => _state == VpnState.connecting;
   bool get isFailed     => _state == VpnState.failed;
 
-  // ─── Internals ────────────────────────────────────────────
-  final _singbox = FlutterSingboxClient();
+  // ─── الـ API الصحيح: SingboxClient ───────────────────────
+  final _client = SingboxClient();
   Timer? _statsTimer;
   Timer? _verifyTimer;
   DateTime? _connectedAt;
@@ -55,19 +54,27 @@ class SingboxProvider extends ChangeNotifier {
 
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
-    _customUrl   = prefs.getString(_prefCustomUrl);
-    _blockAds    = prefs.getBool(_prefBlockAds)    ?? true;
-    _autoSpeedTest = prefs.getBool(_prefAutoSpeed) ?? true;
+    _customUrl     = prefs.getString(_prefCustomUrl);
+    _blockAds      = prefs.getBool(_prefBlockAds)    ?? true;
+    _autoSpeedTest = prefs.getBool(_prefAutoSpeed)   ?? true;
 
     final saved = prefs.getStringList(_prefExcludedApps);
     if (saved != null) _excludedApps = saved;
 
-    // نحمل الدولة ونختار الـ Mode الأفضل
+    // تهيئة المكتبة
+    await _client.initialize();
+
+    // نحمل الدولة
     await GeoService.load();
     _mode = _bestMode();
 
-    _singbox.onStatusChanged  = _onStatusChanged;
-    _singbox.onTrafficChanged = _onTrafficChanged;
+    // نستمع للأحداث
+    _client.serviceStateStream.listen(_onStateChanged);
+    _client.trafficStatsStream.listen(_onTraffic);
+    _client.faultStream.listen((err) {
+      debugPrint('SingBox fault: $err');
+      _setFailed(err.toString());
+    });
 
     notifyListeners();
   }
@@ -96,18 +103,18 @@ class SingboxProvider extends ChangeNotifier {
   Future<void> addExcludedApp(String pkg) async {
     if (!_excludedApps.contains(pkg)) {
       _excludedApps = [..._excludedApps, pkg];
-      await _saveExcludedApps();
+      await _saveExcluded();
       notifyListeners();
     }
   }
 
   Future<void> removeExcludedApp(String pkg) async {
     _excludedApps = _excludedApps.where((a) => a != pkg).toList();
-    await _saveExcludedApps();
+    await _saveExcluded();
     notifyListeners();
   }
 
-  Future<void> _saveExcludedApps() async {
+  Future<void> _saveExcluded() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(_prefExcludedApps, _excludedApps);
   }
@@ -132,6 +139,7 @@ class SingboxProvider extends ChangeNotifier {
       await disconnect();
       return;
     }
+
     _state  = VpnState.connecting;
     _status = 'Connecting...';
     notifyListeners();
@@ -140,12 +148,32 @@ class SingboxProvider extends ChangeNotifier {
       final config = await _buildConfig();
       if (config == null) { _setFailed('No config available'); return; }
 
-      final granted = await _singbox.requestPermission();
-      if (!granted) { _setFailed('VPN permission denied'); return; }
+      // طلب صلاحية VPN
+      if (!await _client.requestVPNPermission()) {
+        _setFailed('VPN permission denied');
+        return;
+      }
 
-      await _singbox.start(config: config);
+      // الاتصال بالـ API الصحيح
+      await _client.connect(SessionOptions(
+        config: config,
+        networkMode: NetworkMode.vpn,
+        perAppProxy: PerAppProxyOptions(
+          mode: _excludedApps.isEmpty
+              ? PerAppProxyMode.off
+              : PerAppProxyMode.exclude,
+          packages: _excludedApps,
+        ),
+        notification: NotificationConfig(
+          title: 'OnyxVPN',
+          showTrafficStats: true,
+          showStopButton: true,
+          stopButtonLabel: 'Disconnect',
+        ),
+      ));
+
     } catch (e) {
-      debugPrint('SingBox error: $e');
+      debugPrint('Connect error: $e');
       _setFailed('Connection failed');
     }
   }
@@ -153,7 +181,7 @@ class SingboxProvider extends ChangeNotifier {
   Future<void> disconnect() async {
     _verifyTimer?.cancel();
     _statsTimer?.cancel();
-    await _singbox.stop();
+    await _client.disconnect();
     _connectedAt = null;
     _state     = VpnState.disconnected;
     _status    = '';
@@ -172,75 +200,44 @@ class SingboxProvider extends ChangeNotifier {
 
     switch (_mode) {
       case VpnMode.warp:
-        return SingboxConfigs.warp(
-          countryCode:  country,
-          excludedApps: _excludedApps,
-        );
+        return SingboxConfigs.warp(countryCode: country, excludedApps: _excludedApps);
       case VpnMode.psiphon:
-        return SingboxConfigs.psiphon(
-          countryCode:  country,
-          excludedApps: _excludedApps,
-        );
+        return SingboxConfigs.psiphon(countryCode: country, excludedApps: _excludedApps);
       case VpnMode.mahsa:
-        return await _fetchAndBuild(
-          SingboxConfigs.mahsaUrl,
-          countryCode:  country,
-          excludedApps: _excludedApps,
-        );
+        return await _fetchAndBuild(SingboxConfigs.mahsaUrl, countryCode: country, excludedApps: _excludedApps);
       case VpnMode.custom:
         if (_customUrl == null || _customUrl!.isEmpty) return null;
-        return await _fetchAndBuild(
-          _customUrl!,
-          countryCode:  country,
-          excludedApps: _excludedApps,
-        );
+        return await _fetchAndBuild(_customUrl!, countryCode: country, excludedApps: _excludedApps);
     }
   }
 
-  // ─── جلب Subscription وتحويله ────────────────────────────
-  Future<String?> _fetchAndBuild(
-    String url, {
-    required String countryCode,
-    required List<String> excludedApps,
-  }) async {
+  Future<String?> _fetchAndBuild(String url, {required String countryCode, required List<String> excludedApps}) async {
     try {
       _status = 'Fetching servers...';
       notifyListeners();
 
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {'User-Agent': 'sing-box/1.0'},
-      ).timeout(const Duration(seconds: 10));
+      final res = await http.get(Uri.parse(url), headers: {'User-Agent': 'sing-box/1.0'})
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode != 200) return null;
       final body = res.body.trim();
 
-      // ① sing-box JSON مباشرة
       if (body.startsWith('{')) return body;
 
-      // ② base64
       try {
-        final decoded = utf8.decode(base64.decode(
-          body + '=' * ((4 - body.length % 4) % 4),
-        ));
+        final decoded = utf8.decode(base64.decode(body + '=' * ((4 - body.length % 4) % 4)));
         if (decoded.startsWith('{')) return decoded;
         return _linksToConfig(decoded.split('\n'), countryCode: countryCode, excludedApps: excludedApps);
       } catch (_) {}
 
-      // ③ قائمة links
       return _linksToConfig(body.split('\n'), countryCode: countryCode, excludedApps: excludedApps);
-
     } catch (e) {
       debugPrint('Fetch error: $e');
       return null;
     }
   }
 
-  String? _linksToConfig(
-    List<String> lines, {
-    required String countryCode,
-    required List<String> excludedApps,
-  }) {
+  String? _linksToConfig(List<String> lines, {required String countryCode, required List<String> excludedApps}) {
     final outbounds = <Map<String, dynamic>>[];
     for (final line in lines) {
       final l = line.trim();
@@ -250,12 +247,7 @@ class SingboxProvider extends ChangeNotifier {
       if (outbounds.length >= 5) break;
     }
     if (outbounds.isEmpty) return null;
-
-    return SingboxConfigs.mahsaConfig(
-      outbounds:    outbounds,
-      countryCode:  countryCode,
-      excludedApps: excludedApps,
-    );
+    return SingboxConfigs.mahsaConfig(outbounds: outbounds, countryCode: countryCode, excludedApps: excludedApps);
   }
 
   Map<String, dynamic>? _parseLink(String link) {
@@ -266,17 +258,12 @@ class SingboxProvider extends ChangeNotifier {
       if (link.startsWith('vless://')) {
         final p = uri.queryParameters;
         return {
-          'type': 'vless', 'tag': tag,
-          'server': uri.host, 'server_port': uri.port,
+          'type': 'vless', 'tag': tag, 'server': uri.host, 'server_port': uri.port,
           'uuid': uri.userInfo, 'flow': p['flow'] ?? '',
           'tls': {
             'enabled': p['security'] == 'tls' || p['security'] == 'reality',
             'server_name': p['sni'] ?? p['host'] ?? uri.host,
-            if (p['security'] == 'reality') 'reality': {
-              'enabled': true,
-              'public_key': p['pbk'] ?? '',
-              'short_id': p['sid'] ?? '',
-            },
+            if (p['security'] == 'reality') 'reality': {'enabled': true, 'public_key': p['pbk'] ?? '', 'short_id': p['sid'] ?? ''},
             'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
           },
           'transport': _parseTransport(p),
@@ -286,32 +273,19 @@ class SingboxProvider extends ChangeNotifier {
       if (link.startsWith('trojan://')) {
         final p = uri.queryParameters;
         return {
-          'type': 'trojan', 'tag': tag,
-          'server': uri.host, 'server_port': uri.port,
+          'type': 'trojan', 'tag': tag, 'server': uri.host, 'server_port': uri.port,
           'password': uri.userInfo,
-          'tls': {
-            'enabled': true,
-            'server_name': p['sni'] ?? uri.host,
-            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
-          },
+          'tls': {'enabled': true, 'server_name': p['sni'] ?? uri.host, 'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'}},
         };
       }
       if (link.startsWith('vmess://')) {
-        final decoded = jsonDecode(utf8.decode(base64.decode(
-          link.substring(8) + '=' * ((4 - link.substring(8).length % 4) % 4),
-        )));
+        final decoded = jsonDecode(utf8.decode(base64.decode(link.substring(8) + '=' * ((4 - link.substring(8).length % 4) % 4))));
         return {
-          'type': 'vmess', 'tag': decoded['ps'] ?? tag,
-          'server': decoded['add'],
+          'type': 'vmess', 'tag': decoded['ps'] ?? tag, 'server': decoded['add'],
           'server_port': int.tryParse(decoded['port'].toString()) ?? 443,
-          'uuid': decoded['id'],
-          'alter_id': int.tryParse(decoded['aid'].toString()) ?? 0,
-          'security': decoded['scy'] ?? 'auto',
-          'tls': {'enabled': decoded['tls'] == 'tls'},
-          if (decoded['net'] != 'tcp') 'transport': {
-            'type': decoded['net'], 'path': decoded['path'] ?? '/',
-            if (decoded['host'] != null) 'headers': {'Host': decoded['host']},
-          },
+          'uuid': decoded['id'], 'alter_id': int.tryParse(decoded['aid'].toString()) ?? 0,
+          'security': decoded['scy'] ?? 'auto', 'tls': {'enabled': decoded['tls'] == 'tls'},
+          if (decoded['net'] != 'tcp') 'transport': {'type': decoded['net'], 'path': decoded['path'] ?? '/', if (decoded['host'] != null) 'headers': {'Host': decoded['host']}},
         };
       }
     } catch (_) {}
@@ -326,19 +300,22 @@ class SingboxProvider extends ChangeNotifier {
     return {'type': type};
   }
 
-  // ─── Callbacks ────────────────────────────────────────────
-  void _onStatusChanged(String status) {
-    switch (status) {
-      case 'connected':
+  // ─── Callbacks من المكتبة ─────────────────────────────────
+  void _onStateChanged(ServiceState state) {
+    switch (state) {
+      case ServiceState.connected:
         _state       = VpnState.connected;
         _status      = '';
         _connectedAt = DateTime.now();
         _verifyTimer?.cancel();
         _verifyTimer = Timer(const Duration(seconds: 3), _verifyAndFallback);
         _startTimer();
-        _showNotif();
+        NotificationService.showConnected(
+          modeName: _mode.name,
+          modeEmoji: VpnModeInfo.all.firstWhere((i) => i.mode == _mode).emoji,
+        );
         break;
-      case 'disconnected':
+      case ServiceState.disconnected:
         if (_state == VpnState.connecting) {
           _setFailed('Connection failed');
         } else {
@@ -348,17 +325,19 @@ class SingboxProvider extends ChangeNotifier {
         _statsTimer?.cancel();
         _connectedAt = null;
         break;
-      case 'connecting':
+      case ServiceState.connecting:
         _state  = VpnState.connecting;
         _status = 'Connecting...';
+        break;
+      default:
         break;
     }
     notifyListeners();
   }
 
-  void _onTrafficChanged(int down, int up) {
-    _downSpeed = _formatSpeed(down);
-    _upSpeed   = _formatSpeed(up);
+  void _onTraffic(TrafficStats stats) {
+    _downSpeed = _formatSpeed(stats.downlinkBps);
+    _upSpeed   = _formatSpeed(stats.uplinkBps);
     notifyListeners();
   }
 
@@ -366,10 +345,9 @@ class SingboxProvider extends ChangeNotifier {
   Future<void> _verifyAndFallback() async {
     final works = await _verifyConnection();
     if (!works && _state == VpnState.connected) {
-      debugPrint('⚠️ Connected but no traffic');
       await disconnect();
       if (_mode == VpnMode.warp) {
-        _mode = VpnMode.psiphon;
+        _mode   = VpnMode.psiphon;
         _status = 'Warp failed, trying Psiphon...';
         notifyListeners();
         await Future.delayed(const Duration(seconds: 1));
@@ -381,14 +359,10 @@ class SingboxProvider extends ChangeNotifier {
   }
 
   Future<bool> _verifyConnection() async {
-    const urls = [
-      'https://www.google.com/generate_204',
-      'https://connectivitycheck.gstatic.com/generate_204',
-    ];
+    const urls = ['https://www.google.com/generate_204', 'https://connectivitycheck.gstatic.com/generate_204'];
     for (final url in urls) {
       try {
-        final res = await http.get(Uri.parse(url))
-            .timeout(const Duration(seconds: 6));
+        final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 6));
         if (res.statusCode == 204 || res.statusCode == 200) return true;
       } catch (_) { continue; }
     }
@@ -419,18 +393,12 @@ class SingboxProvider extends ChangeNotifier {
     return '$h:$m:$s';
   }
 
-  String _formatSpeed(int bytes) {
+  String _formatSpeed(int bps) {
+    final bytes = bps ~/ 8;
     if (bytes <= 0) return '0 B/s';
     if (bytes >= 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB/s';
     if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB/s';
     return '$bytes B/s';
-  }
-
-  Future<void> _showNotif() async {
-    final info = VpnModeInfo.all.firstWhere((i) => i.mode == _mode);
-    await NotificationService.showConnected(
-      modeName: info.name, modeEmoji: info.emoji,
-    );
   }
 
   @override
