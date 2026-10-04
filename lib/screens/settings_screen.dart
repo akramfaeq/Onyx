@@ -41,7 +41,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 8),
             _SubTitle('Apps excluded from VPN (use direct connection)'),
             const SizedBox(height: 12),
-            ...SplitTunnelingApps.common.map((app) => _AppToggle(
+            ...SplitTunnelingApps.common.map<Widget>((app) => _AppToggle(
               app: app,
               enabled: !vpn.excludedApps.contains(app.packageName),
               onToggle: (val) {
@@ -51,7 +51,7 @@ class SettingsScreen extends StatelessWidget {
                   vpn.addExcludedApp(app.packageName);
                 }
               },
-            )),
+            )).toList(),
             const SizedBox(height: 24),
 
             // ─── DNS ──────────────────────────────────────
@@ -75,7 +75,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 24),
 
             // ─── Speed Test ───────────────────────────────
-            ('Connection'),
+            _SectionTitle('Connection'),
             _ActionTile(
               icon: Icons.speed_rounded,
               title: 'Auto Speed Test',
@@ -90,7 +90,7 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
       ),
-    );_SectionTitle
+    );
   }
 }
 
