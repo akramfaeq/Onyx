@@ -31,7 +31,6 @@ jobs:
     - name: Update Gradle version
       run: |
         sed -i 's#gradle-8.3-all.zip#gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
-        perl -0pi -e 's/\n\s*kotlinOptions\s*\{[^}]*\}\n/\n/' android/app/build.gradle.kts
 
     - name: Install dependencies
       run: flutter pub get

@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.onyxvpn"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.onyxvpn"
@@ -19,10 +19,6 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     buildTypes {
