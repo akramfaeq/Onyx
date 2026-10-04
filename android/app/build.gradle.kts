@@ -1,18 +1,24 @@
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
 android {
-    namespace "com.onyxvpn"
-    compileSdk 35
+    namespace = "com.onyxvpn"
+    compileSdk = 35
 
     defaultConfig {
-        applicationId "com.onyxvpn"
-        minSdk 23
-        targetSdk 35
-        versionCode 1
-        versionName "2.0.0"
+        applicationId = "com.onyxvpn"
+        minSdk = 23
+        targetSdk = 35
+        versionCode = 1
+        versionName = "2.0.0"
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlinOptions {
@@ -21,12 +27,19 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
 
+flutter {
+    source = "../.."
+}
+
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.3.20"
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.3.20")
 }
