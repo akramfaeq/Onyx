@@ -31,7 +31,7 @@ jobs:
     - name: Download hiddify-core.aar
       run: |
         mkdir -p android/app/libs
-        curl -L "https://github.com/akramfaeq/onyx_vpn/releases/download/v1.0.0/hiddify-core.aar" \
+        curl -L "https://github.com/hiddify/hiddify-core/releases/download/v2.5.8/hiddify-core-android.aar" \
           -o android/app/libs/hiddify-core.aar
 
     - name: Update Gradle version
