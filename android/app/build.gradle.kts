@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.onyxvpn.onyx_vpn"
-    compileSdk = 36
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.onyxvpn.onyx_vpn"
