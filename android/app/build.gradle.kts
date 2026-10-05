@@ -11,7 +11,7 @@ android {
     defaultConfig {
         applicationId = "com.onyxvpn.onyx_vpn"
         minSdk = 23
-        targetSdk = 35
+        targetSdk = 34
         versionCode = 1
         versionName = "2.0.0"
     }
@@ -36,6 +36,12 @@ android {
                 "proguard-rules.pro"
             )
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    configurations.all {
+        resolutionStrategy {
+            force("com.android.tools.build:aapt2:8.3.0-10880808")
         }
     }
 }
