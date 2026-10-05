@@ -1,6 +1,6 @@
-// ─── الـ 4 خيارات الرئيسية للتطبيق ───────────────────────────
+// ─── الـ 5 خيارات الرئيسية للتطبيق ───────────────────────────
 
-enum VpnMode { warp, psiphon, mahsa, custom }
+enum VpnMode { warp, psiphon, warpPsiphon, mahsa, custom }
 
 class VpnModeInfo {
   final VpnMode mode;
@@ -35,6 +35,16 @@ class VpnModeInfo {
     tag:      'Bypass',
   );
 
+  // Warp + Psiphon → نفس طريقة Hiddify (سرعة + نفاذية)
+  // Warp يتصل عبر Psiphon — يجمع سرعة WireGuard مع نفاذية Psiphon
+  static const warpPsiphon = VpnModeInfo(
+    mode:     VpnMode.warpPsiphon,
+    name:     'Warp+',
+    subtitle: 'Warp via Psiphon',
+    emoji:    '⚡',
+    tag:      'Fast',
+  );
+
   // Mahsa → subscription link من GitHub (Reality/VLESS)
   static const mahsa = VpnModeInfo(
     mode:     VpnMode.mahsa,
@@ -53,5 +63,5 @@ class VpnModeInfo {
     tag:      '',
   );
 
-  static const all = [warp, psiphon, mahsa, custom];
+  static const all = [warp, warpPsiphon, psiphon, mahsa, custom];
 }

@@ -1,61 +1,45 @@
 // ─── Warp Service ─────────────────────────────────────────────
-// يسجّل جهاز في Cloudflare WARP API ويجيب مفاتيح WireGuard حقيقية
-// نفس طريقة hiddify / wgcf
-//
-// الإصلاح: نعتمد على الـ public key اللي يرجعه API مباشرة
-// بدل ما نولّده محلياً (X25519 يحتاج Diffie-Hellman الصح)
+// نفس طريقة Hiddify / wgcf بالضبط:
+// 1. نولّد private key صحيح بـ Random.secure() + Curve25519 clamping
+// 2. نسجّل جهاز في Cloudflare WARP API
+// 3. نأخذ peer_public_key + reserved + addresses من الـ response مباشرة
 
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class WarpKeys {
   final String privateKey;
-  final String publicKey;
   final String peerPublicKey;
   final List<int> reserved;
-  final String clientId;
-  final String accountId;
-  final String accessToken;
   final String v4Address;
   final String v6Address;
   final DateTime createdAt;
 
   const WarpKeys({
     required this.privateKey,
-    required this.publicKey,
     required this.peerPublicKey,
     required this.reserved,
-    required this.clientId,
-    required this.accountId,
-    required this.accessToken,
     required this.v4Address,
     required this.v6Address,
     required this.createdAt,
   });
 
   Map<String, dynamic> toJson() => {
-    'private_key':    privateKey,
-    'public_key':     publicKey,
+    'private_key':     privateKey,
     'peer_public_key': peerPublicKey,
-    'reserved':       reserved,
-    'client_id':      clientId,
-    'account_id':     accountId,
-    'access_token':   accessToken,
-    'v4_address':     v4Address,
-    'v6_address':     v6Address,
-    'created_at':     createdAt.toIso8601String(),
+    'reserved':        reserved,
+    'v4_address':      v4Address,
+    'v6_address':      v6Address,
+    'created_at':      createdAt.toIso8601String(),
   };
 
   factory WarpKeys.fromJson(Map<String, dynamic> j) => WarpKeys(
     privateKey:    j['private_key']     as String,
-    publicKey:     j['public_key']      as String,
     peerPublicKey: j['peer_public_key'] as String,
     reserved:      List<int>.from(j['reserved'] as List),
-    clientId:      j['client_id']       as String,
-    accountId:     j['account_id']      as String,
-    accessToken:   j['access_token']    as String,
     v4Address:     j['v4_address']      as String,
     v6Address:     j['v6_address']      as String,
     createdAt:     DateTime.parse(j['created_at'] as String),
@@ -63,19 +47,16 @@ class WarpKeys {
 }
 
 class WarpService {
-  static const _prefKey = 'warp_keys_v2';
-
-  static const _apiBase    = 'https://api.cloudflareclient.com/v0a4471';
-  static const _cfVersion  = 'a-6.35-4471';
-  static const _userAgent  = 'WARP for Android/6.35.4471 (Android 14.0; ARM64)';
+  static const _prefKey   = 'warp_keys_v3';
+  static const _apiBase   = 'https://api.cloudflareclient.com/v0a4471';
+  static const _cfVersion = 'a-6.35-4471';
+  static const _userAgent = 'WARP for Android/6.35.4471 (Android 14.0; ARM64)';
 
   static WarpKeys? _cached;
 
-  /// يجيب مفاتيح WARP — من كاش أو يسجّل جهاز جديد
   static Future<WarpKeys?> getKeys({bool forceRefresh = false}) async {
     if (!forceRefresh && _cached != null) return _cached;
 
-    // حاول الكاش أولاً
     if (!forceRefresh) {
       final saved = await _loadFromPrefs();
       if (saved != null) {
@@ -84,7 +65,6 @@ class WarpService {
       }
     }
 
-    // سجّل جهاز جديد
     final keys = await _registerDevice();
     if (keys != null) {
       _cached = keys;
@@ -95,25 +75,29 @@ class WarpService {
 
   static Future<WarpKeys?> _registerDevice() async {
     try {
-      // نولّد private key عشوائي (base64)
-      final keyBytes = List<int>.generate(32, (_) =>
-          DateTime.now().microsecondsSinceEpoch % 256);
+      // ① توليد private key صحيح — نفس طريقة wgcf/Hiddify
+      final rng      = Random.secure();
+      final keyBytes = List<int>.generate(32, (_) => rng.nextInt(256));
+      // Curve25519 clamping (RFC 7748)
+      keyBytes[0]  &= 248;
+      keyBytes[31]  = (keyBytes[31] & 127) | 64;
       final privateKey = base64Url.encode(keyBytes).replaceAll('=', '');
 
+      // ② تسجيل في Cloudflare WARP API
       final res = await http.post(
         Uri.parse('$_apiBase/reg'),
         headers: {
-          'Content-Type':    'application/json',
+          'Content-Type':      'application/json',
           'CF-Client-Version': _cfVersion,
-          'User-Agent':      _userAgent,
+          'User-Agent':        _userAgent,
         },
         body: jsonEncode({
-          'install_id': '',
-          'fcm_token':  '',
-          'tos':        DateTime.now().toUtc().toIso8601String(),
-          'model':      'OnePlus',
+          'install_id':    '',
+          'fcm_token':     '',
+          'tos':           DateTime.now().toUtc().toIso8601String(),
+          'model':         'Samsung',
           'serial_number': '',
-          'locale':     'en_US',
+          'locale':        'en_US',
         }),
       ).timeout(const Duration(seconds: 15));
 
@@ -122,29 +106,28 @@ class WarpService {
         return null;
       }
 
-      final data    = jsonDecode(res.body) as Map<String, dynamic>;
-      final config  = data['config']  as Map<String, dynamic>;
-      final peers   = config['peers'] as List<dynamic>;
-      final peer    = peers.first     as Map<String, dynamic>;
-      final iface   = config['interface'] as Map<String, dynamic>;
-      final addrs   = iface['addresses']  as Map<String, dynamic>;
+      final data   = jsonDecode(res.body) as Map<String, dynamic>;
+      final config = data['config'] as Map<String, dynamic>;
+      final peers  = config['peers'] as List<dynamic>;
+      final peer   = peers.first as Map<String, dynamic>;
+      final iface  = config['interface'] as Map<String, dynamic>;
+      final addrs  = iface['addresses'] as Map<String, dynamic>;
 
-      // نأخذ الـ reserved من client_id (base64 → 3 bytes)
-      final clientId = data['id'] as String;
+      // ③ الـ reserved يجيب من client_id (3 bytes أول من base64)
+      final clientId = data['client_id'] as String? ??
+                       (data['config'] as Map<String, dynamic>)['client_id'] as String? ?? '';
       List<int> reserved = [0, 0, 0];
-      try {
-        final b = base64.decode(clientId + '=' * ((4 - clientId.length % 4) % 4));
-        if (b.length >= 3) reserved = [b[0], b[1], b[2]];
-      } catch (_) {}
+      if (clientId.isNotEmpty) {
+        try {
+          final b = base64.decode(clientId + '=' * ((4 - clientId.length % 4) % 4));
+          if (b.length >= 3) reserved = [b[0], b[1], b[2]];
+        } catch (_) {}
+      }
 
       return WarpKeys(
         privateKey:    privateKey,
-        publicKey:     peer['public_key'] as String,
         peerPublicKey: peer['public_key'] as String,
         reserved:      reserved,
-        clientId:      clientId,
-        accountId:     (data['account'] as Map<String, dynamic>)['id'] as String,
-        accessToken:   data['token'] as String,
         v4Address:     addrs['v4'] as String,
         v6Address:     addrs['v6'] as String,
         createdAt:     DateTime.now(),
@@ -155,7 +138,6 @@ class WarpService {
     }
   }
 
-  // ─── SharedPreferences ───────────────────────────────────
   static Future<WarpKeys?> _loadFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();

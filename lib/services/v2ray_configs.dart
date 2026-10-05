@@ -132,7 +132,70 @@ class V2RayConfigs {
   }
 
   // ════════════════════════════════════════════════════════════
-  // ③ MAHSA — سيرفرات من GitHub
+  // ③ WARP via PSIPHON — نفس طريقة Hiddify (warp-plus)
+  //    Psiphon يكون tunnel، Warp يتصل من فوقه
+  //    النتيجة: سرعة WireGuard + نفاذية Psiphon
+  // ════════════════════════════════════════════════════════════
+  static Future<String> warpViaPsiphon({
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+    bool forceNewKeys = false,
+  }) async {
+    final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
+
+    final privateKey = keys?.privateKey    ?? '4GgaQCy368kz1QjIHkQMCf35CJ3XeFBUKQfaYkANE1w=';
+    final peerPub    = keys?.peerPublicKey ?? 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=';
+    final reserved   = keys?.reserved      ?? [0, 0, 0];
+    final v4         = keys?.v4Address     ?? '172.16.0.2';
+    final v6         = keys?.v6Address     ?? '2606:4700:110:8f0b::2';
+
+    // Warp WireGuard يتصل عبر Psiphon كـ detour
+    Map<String, dynamic> wgViaPsiphon(String tag, int port) => {
+      'type':            'wireguard',
+      'tag':             tag,
+      'server':          'engage.cloudflareclient.com',
+      'server_port':     port,
+      'local_address':   ['$v4/32', '$v6/128'],
+      'private_key':     privateKey,
+      'peer_public_key': peerPub,
+      'reserved':        reserved,
+      'mtu':             1280,
+      'detour':          'psiphon-out',  // ← هذا هو السر — Warp يمشي عبر Psiphon
+    };
+
+    return jsonEncode({
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
+      'inbounds': _inbounds(excluded: excludedApps),
+      'outbounds': [
+        // urltest يختار أسرع Warp port تلقائياً
+        {
+          'type':      'urltest',
+          'tag':       'proxy',
+          'outbounds': ['warp-p-2408', 'warp-p-500', 'warp-p-1701', 'warp-p-4500'],
+          'url':       'https://www.gstatic.com/generate_204',
+          'interval':  '3m',
+          'tolerance': 50,
+        },
+        // 4 ports لـ Warp — كلها تمشي عبر Psiphon
+        wgViaPsiphon('warp-p-2408', 2408),
+        wgViaPsiphon('warp-p-500',  500),
+        wgViaPsiphon('warp-p-1701', 1701),
+        wgViaPsiphon('warp-p-4500', 4500),
+        // Psiphon كـ tunnel تحت Warp
+        {
+          'type': 'psiphon',
+          'tag':  'psiphon-out',
+        },
+        ..._base(),
+      ],
+      'route': _route(cc: countryCode, blockAds: blockAds),
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // ④ MAHSA — سيرفرات من GitHub
   // ════════════════════════════════════════════════════════════
   static Future<String?> mahsa({
     String countryCode = 'iq',

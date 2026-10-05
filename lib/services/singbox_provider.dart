@@ -240,6 +240,15 @@ class SingboxProvider extends ChangeNotifier {
           blockAds: _blockAds,
         );
 
+      case VpnMode.warpPsiphon:
+        _status = 'Fetching Warp keys...';
+        notifyListeners();
+        return await V2RayConfigs.warpViaPsiphon(
+          countryCode: cc,
+          excludedApps: _excludedApps,
+          blockAds: _blockAds,
+        );
+
       case VpnMode.mahsa:
         _status = 'Fetching Mahsa servers...';
         notifyListeners();

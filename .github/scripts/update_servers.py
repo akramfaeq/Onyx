@@ -1,6 +1,10 @@
 """
 update_servers.py — V2Ray Edition with TCP verification
-يختبر كل سيرفر بـ TCP قبل رفعه لـ Supabase — يضمن السيرفرات شغالة فعلاً.
+نفس المنهجية الصحيحة:
+① جلب configs من مصادر متعددة
+② parse صحيح مع reserved من client_id (وليس id)
+③ TCP test متوازي
+④ رفع Supabase
 """
 
 import os
@@ -19,8 +23,8 @@ SUPABASE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 
 MAX_SERVERS     = 60
 MAX_PER_COUNTRY = 5
-TCP_TIMEOUT     = 4   # ثواني لاختبار كل سيرفر
-MAX_WORKERS     = 40  # عدد الـ threads المتوازية
+TCP_TIMEOUT     = 4
+MAX_WORKERS     = 40
 
 SOURCES = [
     {
@@ -59,6 +63,19 @@ SOURCES = [
         "encoded":  True,
         "priority": 3,
     },
+    # مصادر إضافية موثوقة
+    {
+        "url":      "https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mci/sub_1.txt",
+        "name":     "mahsanet-mci-1",
+        "encoded":  True,
+        "priority": 2,
+    },
+    {
+        "url":      "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge_base64.txt",
+        "name":     "V2RayAggregator",
+        "encoded":  True,
+        "priority": 3,
+    },
 ]
 
 VALID_PROTOCOLS = ("vless://", "vmess://", "trojan://", "ss://")
@@ -67,8 +84,11 @@ VALID_PROTOCOLS = ("vless://", "vmess://", "trojan://", "ss://")
 # ─── جلب configs ──────────────────────────────────────────────
 def fetch_source(source: dict) -> list[str]:
     try:
-        r = requests.get(source["url"], timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(
+            source["url"],
+            timeout=15,
+            headers={"User-Agent": "Hiddify/2.0 (compatible; sing-box)"},
+        )
         if r.status_code != 200:
             print(f"  ⚠️  {source['name']}: HTTP {r.status_code}")
             return []
@@ -76,7 +96,8 @@ def fetch_source(source: dict) -> list[str]:
         text = r.text.strip()
         if source["encoded"] or not any(p in text for p in VALID_PROTOCOLS):
             try:
-                text = base64.b64decode(text + "==").decode("utf-8", errors="ignore")
+                padded = text + "==" 
+                text   = base64.b64decode(padded).decode("utf-8", errors="ignore")
             except Exception:
                 pass
 
@@ -138,13 +159,12 @@ def parse_config(config: str) -> dict | None:
         return None
 
 
-# ─── TCP test — الأهم ─────────────────────────────────────────
+# ─── TCP test ─────────────────────────────────────────────────
 def tcp_ping(ip: str, port: int, timeout: float = TCP_TIMEOUT) -> int:
-    """يرجع ping بالـ ms أو 9999 لو فشل"""
     import time
     try:
-        start = time.time()
-        sock  = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        start  = time.time()
+        sock   = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(timeout)
         result = sock.connect_ex((ip, port))
         sock.close()
@@ -156,7 +176,6 @@ def tcp_ping(ip: str, port: int, timeout: float = TCP_TIMEOUT) -> int:
 
 
 def test_server(info: dict) -> dict | None:
-    """يختبر السيرفر ويرجعه مع ping حقيقي، أو None لو فاشل"""
     ping = tcp_ping(info["ip"], info["port"])
     if ping >= 9999:
         return None
@@ -185,11 +204,13 @@ COUNTRY_MAP = {
     "HK": ["HK", "HONG KONG"],
     "IN": ["IN", "INDIA"],
     "BR": ["BR", "BRAZIL"],
+    "IQ": ["IQ", "IRAQ"],
+    "IR": ["IR", "IRAN"],
 }
 
 def guess_country(remark: str) -> tuple[str, str]:
     r = remark.upper()
-    m = re.search(r'[\[\(]([A-Z]{2})[\]\)]', r)
+    m = re.search(r"[\[\(]([A-Z]{2})[\]\)]", r)
     if m:
         code = m.group(1)
         if code in COUNTRY_MAP:
@@ -200,13 +221,13 @@ def guess_country(remark: str) -> tuple[str, str]:
     return "UN", "Unknown"
 
 
-# ─── main pipeline ────────────────────────────────────────────
+# ─── main ─────────────────────────────────────────────────────
 def main():
     print("=" * 55)
-    print("🚀 V2Ray Edition — مع اختبار TCP حقيقي")
+    print("🚀 V2Ray — مع اختبار TCP حقيقي (Hiddify style)")
     print("=" * 55)
 
-    # ① جلب الـ configs
+    # ① جلب
     all_configs: list[str] = []
     for source in sorted(SOURCES, key=lambda s: s["priority"]):
         configs = fetch_source(source)
@@ -219,7 +240,7 @@ def main():
         print("❌ ما لقينا configs")
         return
 
-    # ② parse
+    # ② parse + dedup بالـ IP
     parsed_list = []
     seen_ips    = set()
     for cfg in all_configs:
@@ -229,10 +250,10 @@ def main():
         seen_ips.add(info["ip"])
         parsed_list.append(info)
 
-    print(f"[Parse] {len(parsed_list)} سيرفر فريد بعد الـ parse")
+    print(f"[Parse] {len(parsed_list)} سيرفر فريد")
 
-    # ③ اختبار TCP متوازي — هذا يضمن السيرفر شغال فعلاً
-    print(f"\n[TCP Test] نختبر {len(parsed_list)} سيرفر بـ {MAX_WORKERS} thread متوازي...")
+    # ③ TCP test متوازي
+    print(f"\n[TCP] نختبر {len(parsed_list)} سيرفر بـ {MAX_WORKERS} thread...")
     alive = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(test_server, info): info for info in parsed_list}
@@ -245,13 +266,12 @@ def main():
             if done % 50 == 0:
                 print(f"  ... {done}/{len(parsed_list)} — شغال: {len(alive)}")
 
-    print(f"\n[TCP] ✅ {len(alive)} سيرفر شغال من {len(parsed_list)}")
-
+    print(f"\n[TCP] ✅ {len(alive)} سيرفر من {len(parsed_list)}")
     if not alive:
         print("❌ كل السيرفرات ماتت!")
         return
 
-    # ④ رتّب: is_hard_to_block أولاً ثم ping
+    # ④ ترتيب: TLS/Reality أولاً ثم ping
     alive.sort(key=lambda s: (0 if s["is_hard_to_block"] else 1, s["ping"]))
 
     # ⑤ حد لكل دولة
@@ -259,11 +279,10 @@ def main():
     final = []
     for s in alive:
         code, name = guess_country(s["remark"])
-        cc          = code
-        count       = country_count.get(cc, 0)
+        count = country_count.get(code, 0)
         if count >= MAX_PER_COUNTRY:
             continue
-        country_count[cc] = count + 1
+        country_count[code] = count + 1
 
         final.append({
             "country_name":     name if name != "Unknown" else s["remark"][:30] or "Unknown",
@@ -282,25 +301,24 @@ def main():
             break
 
     hard = sum(1 for s in final if s["is_hard_to_block"])
-    print(f"[Filter] {len(final)} سيرفر نهائي ({hard} منهم TLS/Reality)")
+    print(f"[Filter] {len(final)} سيرفر نهائي ({hard} TLS/Reality)")
 
-    # ⑥ رفع Supabase
+    # ⑥ Supabase
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
     client.table("servers").delete().neq("ip", "").execute()
     print("\n[Supabase] حذفنا القديم")
 
-    batch_size = 20
-    uploaded   = 0
-    for i in range(0, len(final), batch_size):
-        batch     = final[i:i + batch_size]
+    uploaded = 0
+    for i in range(0, len(final), 20):
+        batch     = final[i:i + 20]
         client.table("servers").insert(batch).execute()
         uploaded += len(batch)
         print(f"[Supabase] {uploaded}/{len(final)}")
 
+    avg = sum(s["ping"] for s in final) // len(final) if final else 0
     print("\n" + "=" * 55)
-    print(f"✅ خلصنا — {len(final)} سيرفر مختبر وشغال")
+    print(f"✅ {len(final)} سيرفر مختبر وشغال")
     print(f"   🔒 {hard} TLS/Reality | 🌐 {len(final)-hard} عادي")
-    avg = sum(s['ping'] for s in final) // len(final) if final else 0
     print(f"   ⚡ متوسط ping: {avg}ms")
     print("=" * 55)
 
