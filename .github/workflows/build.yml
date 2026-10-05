@@ -28,6 +28,12 @@ jobs:
         flutter-version: '3.24.5'
         cache: true
 
+    - name: Download hiddify-core.aar
+      run: |
+        mkdir -p android/app/libs
+        curl -L "https://github.com/akramfaeq/onyx_vpn/releases/download/v1.0.0/hiddify-core.aar" \
+          -o android/app/libs/hiddify-core.aar
+
     - name: Update Gradle version
       run: |
         sed -i 's#gradle-8.3-all.zip#gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
