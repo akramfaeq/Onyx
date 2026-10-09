@@ -3,6 +3,8 @@ package com.onyxvpn.onyx_vpn
 import android.content.Intent
 import android.net.VpnService
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -18,6 +20,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private var pendingStart = false
+    private var pendingWarpOverProxy = false
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
@@ -40,6 +43,7 @@ class MainActivity : FlutterActivity() {
 
                 "start" -> {
                     val config = call.argument<String>("config") ?: ""
+                    val warpOverProxy = call.argument<Boolean>("warpOverProxy") ?: false
                     if (config.isEmpty()) {
                         result.error("NO_CONFIG", "config is empty", null)
                         return@setMethodCallHandler
@@ -49,29 +53,25 @@ class MainActivity : FlutterActivity() {
                     OnyxCore.writeConfig(config)
 
                     // ② تحقق من صحة الكونفيغ قبل البدء
-                    val checkErr = OnyxCore.checkConfig(config)
-                    if (checkErr.isNotEmpty()) {
-                        Log.e(TAG, "Config check failed: $checkErr")
-                        result.error("INVALID_CONFIG", checkErr, null)
-                        return@setMethodCallHandler
-                    }
+                    // Hiddify Core validates its extended configuration types, including Psiphon.
+                    // The plain Libbox pre-check can reject extensions before Hiddify Core parses them.
 
                     // ③ اطلب VPN permission
                     val intent = VpnService.prepare(this)
                     if (intent != null) {
                         pendingStart = true
+                        pendingWarpOverProxy = warpOverProxy
                         OnyxChannel.sendStatus("permission_requested")
                         startActivityForResult(intent, VPN_REQUEST_CODE)
                         result.success("permission_requested")
                     } else {
-                        startOnyxService()
+                        startOnyxService(warpOverProxy)
                         result.success("starting")
                     }
                 }
 
                 "stop" -> {
-                    stopService(Intent(this, OnyxVpnService::class.java))
-                    result.success(true)
+                    stopVpnAndRespond(result)
                 }
 
                 "isRunning" -> {
@@ -109,19 +109,34 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == VPN_REQUEST_CODE) {
             if (resultCode == RESULT_OK && pendingStart) {
-                startOnyxService()
+                startOnyxService(pendingWarpOverProxy)
             } else {
                 OnyxChannel.sendStatus("failed:Permission denied by user")
             }
             pendingStart = false
+            pendingWarpOverProxy = false
         }
     }
-
-    private fun startOnyxService() {
+    private fun startOnyxService(warpOverProxy: Boolean) {
         val intent = Intent(this, OnyxVpnService::class.java).apply {
             action = OnyxVpnService.ACTION_START
+            putExtra(OnyxVpnService.EXTRA_WARP_OVER_PROXY, warpOverProxy)
         }
         startForegroundService(intent)
+    }
+
+    private fun stopVpnAndRespond(result: MethodChannel.Result, attempt: Int = 0) {
+        val service = OnyxVpnService.instance
+        if (service != null) {
+            service.stopAndWait { result.success(true) }
+        } else if (attempt < 10) {
+            Handler(Looper.getMainLooper()).postDelayed({
+                stopVpnAndRespond(result, attempt + 1)
+            }, 50)
+        } else {
+            stopService(Intent(this, OnyxVpnService::class.java))
+            result.success(true)
+        }
     }
 
     override fun onDestroy() {

@@ -25,7 +25,7 @@ class SettingsScreen extends StatelessWidget {
           children: [
 
             // ─── معلومات الدولة ───────────────────────────
-            _SectionTitle('Your Location'),
+            const _SectionTitle('Your Location'),
             _InfoTile(
               icon: Icons.location_on_rounded,
               title: GeoService.userCountryName.isNotEmpty
@@ -37,9 +37,9 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 24),
 
             // ─── Split Tunneling ──────────────────────────
-            _SectionTitle('Split Tunneling'),
+            const _SectionTitle('Split Tunneling'),
             const SizedBox(height: 8),
-            _SubTitle('Apps excluded from VPN (use direct connection)'),
+            const _SubTitle('Apps excluded from VPN (use direct connection)'),
             const SizedBox(height: 12),
             ...SplitTunnelingApps.common.map<Widget>((app) => _AppToggle(
               app: app,
@@ -51,18 +51,18 @@ class SettingsScreen extends StatelessWidget {
                   vpn.addExcludedApp(app.packageName);
                 }
               },
-            )).toList(),
+            )),
             const SizedBox(height: 24),
 
             // ─── DNS ──────────────────────────────────────
-            _SectionTitle('DNS & Security'),
-            _ToggleTile(
+            const _SectionTitle('DNS & Security'),
+            const _ToggleTile(
               icon: Icons.security_rounded,
               title: 'DNS Leak Protection',
               subtitle: 'Force DNS through VPN tunnel',
               value: true, // دائماً شغال
               onChanged: null, // لا يُغير
-              color: const Color(0xFF10B981),
+              color: Color(0xFF10B981),
             ),
             _ToggleTile(
               icon: Icons.block_rounded,
@@ -75,7 +75,7 @@ class SettingsScreen extends StatelessWidget {
             const SizedBox(height: 24),
 
             // ─── Speed Test ───────────────────────────────
-            _SectionTitle('Connection'),
+            const _SectionTitle('Connection'),
             _ActionTile(
               icon: Icons.speed_rounded,
               title: 'Auto Speed Test',
@@ -84,7 +84,7 @@ class SettingsScreen extends StatelessWidget {
               trailing: Switch(
                 value: vpn.autoSpeedTest,
                 onChanged: vpn.isConnected ? null : (v) => vpn.setAutoSpeedTest(v),
-                activeColor: const Color(0xFF8B5CF6),
+                activeThumbColor: const Color(0xFF8B5CF6),
               ),
             ),
           ],
@@ -190,7 +190,7 @@ class _ToggleTile extends StatelessWidget {
         Switch(
           value: value,
           onChanged: onChanged,
-          activeColor: color,
+          activeThumbColor: color,
         ),
       ],
     ),
@@ -264,7 +264,7 @@ class _AppToggle extends StatelessWidget {
         Switch(
           value: enabled,
           onChanged: onToggle,
-          activeColor: const Color(0xFF8B5CF6),
+          activeThumbColor: const Color(0xFF8B5CF6),
         ),
       ],
     ),

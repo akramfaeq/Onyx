@@ -1,7 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class InfoScreen extends StatelessWidget {
   const InfoScreen({super.key});
+
+  static const _privacyUrl = 'https://akram-app.github.io/onyxvpn-privacy/';
+
+  Future<void> _openPrivacy() async {
+    final uri = Uri.parse(_privacyUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -9,7 +19,7 @@ class InfoScreen extends StatelessWidget {
       backgroundColor: const Color(0xFF0A0A14),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0A14),
-        title: const Text('About & Privacy',
+        title: const Text('About',
             style: TextStyle(color: Colors.white, fontSize: 17)),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
@@ -39,7 +49,7 @@ class InfoScreen extends StatelessWidget {
                             color: Colors.white,
                             fontSize: 18,
                             fontWeight: FontWeight.w700)),
-                    Text('Version 1.0.0',
+                    Text('Version 2.0.0',
                         style: TextStyle(
                             color: Color(0xFF6B7280), fontSize: 13)),
                   ],
@@ -49,38 +59,65 @@ class InfoScreen extends StatelessWidget {
           ),
           const SizedBox(height: 16),
 
-          _SectionTitle('Privacy Policy'),
-          _Card(
-            child: const Text(
-              'OnyxVPN is committed to protecting your privacy.\n\n'
-              '• We do not log your browsing activity, DNS queries, IP addresses, or connection timestamps.\n\n'
-              '• We do not sell, rent, or share your personal data with third parties.\n\n'
-              '• VPN servers are provided by VPNGate, a public VPN relay service operated by the University of Tsukuba, Japan.\n\n'
-              '• Ads are served by Unity Ads. Their privacy policy applies to ad interactions.\n\n'
-              '• We use Supabase to cache server lists only — no personal data is stored.\n\n'
-              '• The app does not require account registration or any personal information.',
-              style: TextStyle(
-                  color: Color(0xFF9CA3AF), fontSize: 13, height: 1.6),
+          // Developer
+          const _SectionTitle('Developer'),
+          const _Card(
+            child: Row(
+              children: [
+                Icon(Icons.person_rounded, color: Color(0xFF7B5CF0), size: 20),
+                SizedBox(width: 12),
+                Text('Akram',
+                    style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
+              ],
             ),
           ),
           const SizedBox(height: 16),
 
-          _SectionTitle('Terms of Use'),
+          // Contact
+          const _SectionTitle('Contact'),
+          const _Card(
+            child: Row(
+              children: [
+                Icon(Icons.email_rounded,
+                    color: Color(0xFF7B5CF0), size: 20),
+                SizedBox(width: 12),
+                Text('onyxvpn.dev@gmail.com',
+                    style:
+                        TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Privacy Policy button
+          const _SectionTitle('Legal'),
           _Card(
-            child: const Text(
-              '• OnyxVPN is provided for legitimate privacy and security purposes only.\n\n'
-              '• You agree not to use this app for any illegal activities.\n\n'
-              '• VPN speeds depend on the public relay servers and your internet connection. We do not guarantee specific speeds.\n\n'
-              '• The service is provided "as is" without warranty of any kind.',
-              style: TextStyle(
-                  color: Color(0xFF9CA3AF), fontSize: 13, height: 1.6),
+            child: InkWell(
+              onTap: _openPrivacy,
+              borderRadius: BorderRadius.circular(12),
+              child: const Row(
+                children: [
+                  Icon(Icons.privacy_tip_rounded,
+                      color: Color(0xFF7B5CF0), size: 20),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text('Privacy Policy',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500)),
+                  ),
+                  Icon(Icons.arrow_forward_ios_rounded,
+                      color: Color(0xFF4B5563), size: 14),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 32),
 
           const Center(
             child: Text(
-              'all rights reserved onyxVPN 2025.',
+              '© 2025 OnyxVPN · All rights reserved',
               style: TextStyle(color: Color(0xFF4B5563), fontSize: 12),
             ),
           ),

@@ -103,7 +103,7 @@ class SingboxConfigs {
     List<String> excludedApps = const [],
   }) => '''{
   "log": { "level": "warn" },
-  ${_dnsBlock},
+  $_dnsBlock,
   ${_tunBlock(excludedApps: excludedApps)},
   "outbounds": [
     {
@@ -132,7 +132,7 @@ class SingboxConfigs {
     List<String> excludedApps = const [],
   }) => '''{
   "log": { "level": "warn" },
-  ${_dnsBlock},
+  $_dnsBlock,
   ${_tunBlock(excludedApps: excludedApps)},
   "outbounds": [
     { "type": "psiphon", "tag": "proxy" },
@@ -158,7 +158,7 @@ class SingboxConfigs {
     final tags = outbounds.map((o) => o['tag'] as String).toList();
     return '''{
   "log": { "level": "warn" },
-  ${_dnsBlock},
+  $_dnsBlock,
   ${_tunBlock(excludedApps: excludedApps)},
   "outbounds": [
     {
@@ -183,9 +183,13 @@ class SingboxConfigs {
     o.forEach((k, v) {
       if (v == null) return;
       buf.write('"$k": ');
-      if (v is String)  buf.write('"$v"');
-      else if (v is Map || v is List) buf.write(_jsonEncode(v));
-      else buf.write(v);
+      if (v is String) {
+        buf.write('"$v"');
+      } else if (v is Map || v is List) {
+        buf.write(_jsonEncode(v));
+      } else {
+        buf.write(v);
+      }
       buf.write(', ');
     });
     return '${buf.toString().trimRight().replaceAll(RegExp(r',$'), '')}}';
@@ -214,7 +218,7 @@ class SingboxConfigs {
     List<String> excludedApps = const [],
   }) => '''{
   "log": { "level": "warn" },
-  ${_dnsBlock},
+  $_dnsBlock,
   ${_tunBlock(excludedApps: excludedApps)},
   "outbounds": [
     {

@@ -1,6 +1,6 @@
 // ─── الـ 5 خيارات الرئيسية للتطبيق ───────────────────────────
 
-enum VpnMode { warp, psiphon, warpPsiphon, mahsa, custom }
+enum VpnMode { warp, psiphon, warpPsiphon, mahsa, pythonServers, custom }
 
 class VpnModeInfo {
   final VpnMode mode;
@@ -54,6 +54,14 @@ class VpnModeInfo {
     tag:      'Mix',
   );
 
+  static const pythonServers = VpnModeInfo(
+    mode: VpnMode.pythonServers,
+    name: 'Python Servers',
+    subtitle: 'Fast community servers',
+    emoji: '🌍',
+    tag: 'FAST',
+  );
+
   // Custom → المستخدم يحط رابطه
   static const custom = VpnModeInfo(
     mode:     VpnMode.custom,
@@ -63,5 +71,5 @@ class VpnModeInfo {
     tag:      '',
   );
 
-  static const all = [warp, warpPsiphon, psiphon, mahsa, custom];
+  static const all = [warpPsiphon, mahsa, pythonServers, custom];
 }

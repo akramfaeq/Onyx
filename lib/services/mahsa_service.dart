@@ -1,217 +1,218 @@
-// ─── Subscription Service (نفس منهجية Hiddify) ─────────────────
-// Hiddify يعتمد على subscription URLs — المستخدم يضيف رابط
-// والتطبيق يجيب منه configs بصيغة V2ray/Sing-box/Clash
-//
-// هنا نفس الطريقة بالضبط:
-// ① نجيب محتوى الـ URL (قد يكون base64 أو plain text أو JSON)
-// ② نحدد الصيغة ونحللها (V2ray lines / Clash YAML / Sing-box JSON)
-// ③ كاش ذكي بطابع زمني حقيقي
+// ─── MahsaService — بنفس منهجية Hiddify (SQLite/Drift بدل JSON) ────
+// هايدفاي يحفظ محتوى الـ subscription كملف على الـ disk
+// نفس الطريقة هنا لكن بـ SQLite عبر Drift: أسرع قراءة وأكثر موثوقية
+// عند الاتصال: نقرأ من DB مباشرة — صفر طلبات شبكة لو الكاش حديث
+// التجديد: صامت في الـ background كل 24 ساعة (نفس Hiddify #profile-update-interval: 24)
+// ────────────────────────────────────────────────────────────────────
 
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// بيانات subscription واحدة
-class SubscriptionInfo {
-  final List<String>   links;        // vless:// vmess:// trojan:// ss://
-  final String?        title;
-  final DateTime       fetchedAt;
-  final int?           uploadBytes;
-  final int?           downloadBytes;
-  final int?           totalBytes;
-  final DateTime?      expireDate;
-
-  const SubscriptionInfo({
-    required this.links,
-    required this.fetchedAt,
-    this.title,
-    this.uploadBytes,
-    this.downloadBytes,
-    this.totalBytes,
-    this.expireDate,
-  });
-}
+import 'app_database.dart';   // ← Drift DB بدل path_provider + dart:io
 
 class MahsaService {
-  static const _prefKey     = 'subscription_cache_v3';
-  static const _cacheHours  = 6; // نفس Hiddify — يجدد كل 6 ساعات
+  // ─── إعدادات ────────────────────────────────────────────────
+  static const _cacheHours    = 24;   // نفس Hiddify (#profile-update-interval: 24)
+  static const _prefetchHours = 22;   // pre-fetch قبل ساعتين من انتهاء الكاش
+  static const _maxLinks      = 50;
 
-  // مصادر مدمجة (fallback لما المستخدم ما يضيف رابط)
-  static const _builtinSources = [
-    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mci/sub_1.txt',
-    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mtn/sub_1.txt',
-    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/main/mci/sub_2.txt',
-    'https://raw.githubusercontent.com/soroushmirzaei/telegram-configs-collector/main/splitted/mixed',
-    'https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge_base64.txt',
-    'https://raw.githubusercontent.com/freefq/free/master/v2',
+  static const _sources = [
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mci/sub_1.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mtn/sub_1.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mci/sub_2.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mtn/sub_2.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mci/sub_3.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mtn/sub_3.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mci/sub_4.txt',
+    'https://raw.githubusercontent.com/mahsanet/MahsaFreeConfig/refs/heads/main/mtn/sub_4.txt',
   ];
 
-  // كاش في الذاكرة
-  static List<String>? _cachedLinks;
-  static DateTime?     _cacheTime;
+  // ─── كاش في الذاكرة (أسرع من DB) ───────────────────────────
+  static List<String>? _memCache;
+  static DateTime?     _memCacheTime;
 
-  // ─── واجهة رئيسية ─────────────────────────────────────────
+  // ─── الواجهة الرئيسية ────────────────────────────────────────
 
-  /// جلب links — من subscription URL مخصص أو المصادر المدمجة
-  static Future<List<String>> getLinks({
-    String? subscriptionUrl,
-    int maxCount = 8,
-    bool forceRefresh = false,
-  }) async {
-    // 1. كاش الذاكرة (فقط لو ما طلبنا refresh ونفس الـ URL)
-    if (!forceRefresh && subscriptionUrl == null &&
-        _cachedLinks != null && _cacheTime != null) {
-      final age = DateTime.now().difference(_cacheTime!);
-      if (age.inHours < _cacheHours && _cachedLinks!.isNotEmpty) {
-        debugPrint('MahsaService: from memory cache (${_cachedLinks!.length})');
-        return _cachedLinks!.take(maxCount).toList();
+  /// يرجع links — من ذاكرة، DB، أو شبكة (بهذا الترتيب)
+  static Future<List<String>> getLinks({bool forceRefresh = false}) async {
+    // 1. كاش الذاكرة — أسرع شي
+    if (!forceRefresh && _memCache != null && _memCacheTime != null) {
+      final age = DateTime.now().difference(_memCacheTime!);
+      if (age.inHours < _cacheHours && _memCache!.isNotEmpty) {
+        debugPrint('MahsaService: memory cache hit (${_memCache!.length} links)');
+        return _memCache!.take(_maxLinks).toList();
       }
     }
 
-    // 2. كاش SharedPreferences (للمصادر المدمجة فقط)
-    if (!forceRefresh && subscriptionUrl == null) {
-      final saved = await _loadFromPrefs();
-      if (saved != null && saved.isNotEmpty) {
-        _cachedLinks = saved;
-        _cacheTime   = DateTime.now();
-        debugPrint('MahsaService: from prefs cache (${saved.length})');
-        return saved.take(maxCount).toList();
+    // 2. قراءة من Drift DB (بدل JSON file)
+    if (!forceRefresh) {
+      final cached = await _readFromDb();
+      if (cached != null && cached.isNotEmpty) {
+        _memCache     = cached;
+        _memCacheTime = DateTime.now();
+        debugPrint('MahsaService: DB cache hit (${cached.length} links)');
+        return cached.take(_maxLinks).toList();
       }
     }
 
     // 3. جلب من الشبكة
-    final links = subscriptionUrl != null
-        ? await _fetchSubscription(subscriptionUrl)
-        : await _fetchBuiltinSources(maxCount: maxCount * 3);
+    debugPrint('MahsaService: fetching from network...');
+    final links = await _fetchFromNetwork();
 
     if (links.isNotEmpty) {
-      if (subscriptionUrl == null) {
-        // نخزن فقط المصادر المدمجة
-        _cachedLinks = links;
-        _cacheTime   = DateTime.now();
-        await _saveToPrefs(links);
-      }
+      _memCache     = links;
+      _memCacheTime = DateTime.now();
+      await _saveToDb(links);
       debugPrint('MahsaService: fetched ${links.length} links');
-      return links.take(maxCount).toList();
+      return links.take(_maxLinks).toList();
+    }
+
+    // 4. fallback: رجّع الكاش القديم حتى لو انتهت صلاحيته
+    if (_memCache != null && _memCache!.isNotEmpty) {
+      debugPrint('MahsaService: using stale memory cache as fallback');
+      return _memCache!.take(_maxLinks).toList();
+    }
+    final stale = await _readFromDbIgnoreAge();
+    if (stale != null && stale.isNotEmpty) {
+      debugPrint('MahsaService: using stale DB cache as fallback');
+      return stale.take(_maxLinks).toList();
     }
 
     return [];
   }
 
-  // ─── جلب Subscription URL مخصص (نفس منهجية Hiddify) ─────────
-
-  /// يجيب SubscriptionInfo كاملة مع بيانات الاستخدام من الهيدرات
-  static Future<SubscriptionInfo?> fetchSubscriptionFull(String url) async {
+  /// تجديد صامت في الـ background — نفس ForegroundProfilesUpdateNotifier
+  /// Pre-fetch قبل ساعة من انتهاء الكاش
+  static Future<void> backgroundRefresh() async {
     try {
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent':     'Hiddify/2.0 (compatible; sing-box)',
-          'Accept':         '*/*',
-        },
-      ).timeout(const Duration(seconds: 15));
+      final lastSaved = await db.getMahsaLastSavedAt();
+      if (lastSaved != null) {
+        final ageHours = DateTime.now().difference(lastSaved).inHours;
+        if (ageHours < _prefetchHours) {
+          debugPrint('MahsaService: backgroundRefresh — cache fresh ($ageHours h), skipping');
+          return;
+        }
+        debugPrint('MahsaService: backgroundRefresh — pre-fetching (cache is $ageHours h old)');
+      } else {
+        debugPrint('MahsaService: backgroundRefresh — no DB cache, fetching');
+      }
+    } catch (_) {
+      debugPrint('MahsaService: backgroundRefresh — DB read error, fetching');
+    }
 
-      if (res.statusCode != 200) return null;
+    unawaited(_fetchAndSave());
+  }
 
-      // قراءة بيانات الاستخدام من headers (نفس Hiddify)
-      final subInfo     = res.headers['subscription-userinfo'] ?? '';
-      final profileTitle= res.headers['profile-title'];
-      int? upload, download, total;
-      DateTime? expire;
+  static Future<void> clearCache() async {
+    _memCache     = null;
+    _memCacheTime = null;
+    await db.clearMahsaLinks();
+    debugPrint('MahsaService: cache cleared');
+  }
 
-      if (subInfo.isNotEmpty) {
-        final parts = Map.fromEntries(
-          subInfo.split(';').map((p) => p.trim().split('=')).where((p) => p.length == 2)
-              .map((p) => MapEntry(p[0].trim(), p[1].trim())),
-        );
-        upload   = int.tryParse(parts['upload']   ?? '');
-        download = int.tryParse(parts['download'] ?? '');
-        total    = int.tryParse(parts['total']    ?? parts['totl'] ?? '');
-        final exp = int.tryParse(parts['expire'] ?? '');
-        if (exp != null) expire = DateTime.fromMillisecondsSinceEpoch(exp * 1000);
+  // ─── DB Operations (بدل File Operations) ────────────────────
+
+  /// يقرأ من DB ويتحقق من العمر — يرجع null لو قديم
+  static Future<List<String>?> _readFromDb() async {
+    try {
+      final lastSaved = await db.getMahsaLastSavedAt();
+      if (lastSaved == null) return null;
+
+      if (DateTime.now().difference(lastSaved).inHours >= _cacheHours) {
+        debugPrint('MahsaService: DB cache expired');
+        return null;
       }
 
-      // قراءة profile-title من header أو base64
-      String? title = profileTitle;
-      if (title != null && title.startsWith('base64:')) {
-        try {
-          final b64 = title.substring(7);
-          title = utf8.decode(base64.decode(b64 + '=' * ((4 - b64.length % 4) % 4)));
-        } catch (_) {}
-      }
-
-      final links = _parseBody(res.body.trim());
-
-      return SubscriptionInfo(
-        links:         links,
-        title:         title,
-        fetchedAt:     DateTime.now(),
-        uploadBytes:   upload,
-        downloadBytes: download,
-        totalBytes:    total,
-        expireDate:    expire,
-      );
-    } catch (e) {
-      debugPrint('MahsaService: fetchSubscriptionFull error — $e');
+      final rows = await db.getAllMahsaLinks();
+      return rows.map((r) => r.rawLink).toList();
+    } catch (_) {
       return null;
     }
   }
 
-  // ─── داخلي ───────────────────────────────────────────────────
-
-  static Future<List<String>> _fetchSubscription(String url) async {
-    final info = await fetchSubscriptionFull(url);
-    return info?.links ?? [];
+  /// يقرأ من DB بغض النظر عن العمر — للـ fallback فقط
+  static Future<List<String>?> _readFromDbIgnoreAge() async {
+    try {
+      final rows = await db.getAllMahsaLinks();
+      if (rows.isEmpty) return null;
+      return rows.map((r) => r.rawLink).toList();
+    } catch (_) {
+      return null;
+    }
   }
 
-  static Future<List<String>> _fetchBuiltinSources({int maxCount = 30}) async {
-    final all = <String>[];
-    final futures = _builtinSources.map(_fetchSingleSource);
-    final results = await Future.wait(futures, eagerError: false)
-        .catchError((_) => <List<String>>[]);
-
-    for (final r in results) {
-      all.addAll(r);
-      if (all.length >= maxCount) break;
+  static Future<void> _saveToDb(List<String> links) async {
+    try {
+      await db.replaceMahsaLinks(links);
+      debugPrint('MahsaService: saved ${links.length} links to DB');
+    } catch (e) {
+      debugPrint('MahsaService: DB save error — $e');
     }
-    return all.take(maxCount).toList();
+  }
+
+  // ─── جلب من الشبكة (لم يتغير) ───────────────────────────────
+
+  static Future<List<String>> _fetchFromNetwork() async {
+    final futures = _sources.map(_fetchSingleSource);
+    final results = await Future.wait(futures, eagerError: false)
+        .catchError((_) => List<List<String>>.empty());
+
+    final seen  = <String>{};
+    final links = <String>[];
+    for (var i = 0; i < 60 && links.length < _maxLinks * 3; i++) {
+      for (final batch in results) {
+        if (i >= batch.length) continue;
+        final link = batch[i];
+        if (seen.add(link)) links.add(link);
+        if (links.length >= _maxLinks * 3) break;
+      }
+    }
+    return links;
+  }
+
+  static Future<void> _fetchAndSave() async {
+    final links = await _fetchFromNetwork();
+    if (links.isNotEmpty) {
+      _memCache     = links;
+      _memCacheTime = DateTime.now();
+      await _saveToDb(links);
+    }
   }
 
   static Future<List<String>> _fetchSingleSource(String url) async {
     try {
       final res = await http.get(
         Uri.parse(url),
-        headers: {'User-Agent': 'Hiddify/2.0'},
-      ).timeout(const Duration(seconds: 10));
+        headers: {
+          'User-Agent': 'HiddifyNext/2.0 (compatible; sing-box)',
+          'Accept':     '*/*',
+        },
+      ).timeout(const Duration(seconds: 12));
 
       if (res.statusCode != 200) return [];
       return _parseBody(res.body.trim());
     } catch (e) {
-      debugPrint('MahsaService: $url — $e');
+      debugPrint('MahsaService: $url → $e');
       return [];
     }
   }
 
-  /// محلّل موحّد — يتعامل مع:
-  ///   • Plain text lines (vless:// vmess:// ...)
-  ///   • Base64 encoded subscription
-  ///   • Sing-box JSON  → يستخرج outbound configs
+  // ─── Parser (لم يتغير) ───────────────────────────────────────
+
   static List<String> _parseBody(String body) {
     if (body.isEmpty) return [];
 
-    // محاولة Sing-box JSON
     if (body.startsWith('{')) {
       try {
         final json = jsonDecode(body) as Map<String, dynamic>;
         final obs  = json['outbounds'] as List<dynamic>? ?? [];
         final links = <String>[];
         for (final ob in obs) {
-          final m = ob as Map<String, dynamic>;
+          final m    = ob as Map<String, dynamic>;
           final type = m['type'] as String? ?? '';
-          if (['vless','vmess','trojan','shadowsocks'].contains(type)) {
-            // نحوّل للصيغة النصية القياسية
-            final link = _outboundToLink(m);
+          if (['vless', 'vmess', 'trojan', 'shadowsocks'].contains(type)) {
+            final link = _singboxOutboundToLink(m);
             if (link != null) links.add(link);
           }
         }
@@ -219,27 +220,24 @@ class MahsaService {
       } catch (_) {}
     }
 
-    // base64 subscription
-    final decoded = _tryBase64Decode(body);
+    final decoded = _tryBase64(body);
     final text    = decoded ?? body;
 
-    // plain text lines
     final links = <String>[];
     for (final raw in text.split(RegExp(r'[\r\n]+'))) {
-      final line = raw.trim();
-      if (line.startsWith('vless://')  ||
-          line.startsWith('vmess://')  ||
-          line.startsWith('trojan://') ||
-          line.startsWith('ss://')) {
+      final line   = raw.trim();
+      final scheme = Uri.tryParse(line)?.scheme.toLowerCase();
+      if (const {'vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'tuic', 'anytls'}
+          .contains(scheme)) {
         links.add(line);
-        if (links.length >= 50) break;
+        if (links.length >= 60) break;
       }
     }
     return links;
   }
 
-  static String? _tryBase64Decode(String input) {
-    if (input.contains('://')) return null; // ليس base64
+  static String? _tryBase64(String input) {
+    if (input.contains('://')) return null;
     try {
       final padded  = input + '=' * ((4 - input.length % 4) % 4);
       final decoded = utf8.decode(base64.decode(padded));
@@ -248,8 +246,7 @@ class MahsaService {
     return null;
   }
 
-  /// تحويل sing-box outbound → رابط قياسي (تقريبي)
-  static String? _outboundToLink(Map<String, dynamic> ob) {
+  static String? _singboxOutboundToLink(Map<String, dynamic> ob) {
     try {
       final type = ob['type'] as String;
       final tag  = ob['tag']  as String? ?? 'node';
@@ -257,57 +254,25 @@ class MahsaService {
       final port = ob['server_port'] as int? ?? 443;
       if (host.isEmpty) return null;
 
-      if (type == 'shadowsocks') {
-        final method = ob['method'] as String? ?? 'none';
-        final pass   = ob['password'] as String? ?? '';
-        final up     = base64Url.encode(utf8.encode('$method:$pass')).replaceAll('=', '');
-        return 'ss://$up@$host:$port#${Uri.encodeComponent(tag)}';
-      }
-      if (type == 'trojan') {
-        final pass = ob['password'] as String? ?? '';
-        return 'trojan://$pass@$host:$port#${Uri.encodeComponent(tag)}';
-      }
-      if (type == 'vless') {
-        final uuid = ob['uuid'] as String? ?? '';
-        return 'vless://$uuid@$host:$port#${Uri.encodeComponent(tag)}';
+      switch (type) {
+        case 'shadowsocks':
+          final method = ob['method']   as String? ?? 'none';
+          final pass   = ob['password'] as String? ?? '';
+          final up     = base64Url.encode(utf8.encode('$method:$pass')).replaceAll('=', '');
+          return 'ss://$up@$host:$port#${Uri.encodeComponent(tag)}';
+        case 'trojan':
+          final pass = ob['password'] as String? ?? '';
+          return 'trojan://$pass@$host:$port#${Uri.encodeComponent(tag)}';
+        case 'vless':
+          final uuid = ob['uuid'] as String? ?? '';
+          return 'vless://$uuid@$host:$port#${Uri.encodeComponent(tag)}';
       }
     } catch (_) {}
     return null;
   }
+}
 
-  // ─── SharedPreferences (كاش 6 ساعات بطابع زمني حقيقي) ──────
-
-  static Future<List<String>?> _loadFromPrefs() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw   = prefs.getString(_prefKey);
-      if (raw == null) return null;
-
-      final data    = jsonDecode(raw) as Map<String, dynamic>;
-      final savedAt = DateTime.parse(data['saved_at'] as String);
-      // فحص العمر الحقيقي للكاش
-      if (DateTime.now().difference(savedAt).inHours >= _cacheHours) return null;
-
-      return List<String>.from(data['links'] as List);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  static Future<void> _saveToPrefs(List<String> links) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefKey, jsonEncode({
-        'saved_at': DateTime.now().toIso8601String(),
-        'links':    links,
-      }));
-    } catch (_) {}
-  }
-
-  static Future<void> clearCache() async {
-    _cachedLinks = null;
-    _cacheTime   = null;
-    final prefs  = await SharedPreferences.getInstance();
-    await prefs.remove(_prefKey);
-  }
+// ignore: avoid_void_async
+void unawaited(Future<void> future) {
+  future.ignore();
 }

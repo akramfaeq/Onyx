@@ -5,10 +5,10 @@
 // 3. نأخذ peer_public_key + reserved + addresses من الـ response مباشرة
 
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:cryptography/cryptography.dart';
 
 class WarpKeys {
   final String privateKey;
@@ -48,9 +48,9 @@ class WarpKeys {
 
 class WarpService {
   static const _prefKey   = 'warp_keys_v3';
-  static const _apiBase   = 'https://api.cloudflareclient.com/v0a4471';
-  static const _cfVersion = 'a-6.35-4471';
-  static const _userAgent = 'WARP for Android/6.35.4471 (Android 14.0; ARM64)';
+  static const _apiBase   = 'https://api.cloudflareclient.com/v0a5641';
+  static const _cfVersion = 'a-6.38.9-5641';
+  static const _userAgent = '1.1.1.1/6.38.9-5641 (Android 14.0.0)';
 
   static WarpKeys? _cached;
 
@@ -76,12 +76,9 @@ class WarpService {
   static Future<WarpKeys?> _registerDevice() async {
     try {
       // ① توليد private key صحيح — نفس طريقة wgcf/Hiddify
-      final rng      = Random.secure();
-      final keyBytes = List<int>.generate(32, (_) => rng.nextInt(256));
-      // Curve25519 clamping (RFC 7748)
-      keyBytes[0]  &= 248;
-      keyBytes[31]  = (keyBytes[31] & 127) | 64;
-      final privateKey = base64Url.encode(keyBytes).replaceAll('=', '');
+      final keyPair = await X25519().newKeyPair();
+      final privateKey = base64Encode(await keyPair.extractPrivateKeyBytes());
+      final publicKey = await keyPair.extractPublicKey();
 
       // ② تسجيل في Cloudflare WARP API
       final res = await http.post(
@@ -92,6 +89,10 @@ class WarpService {
           'User-Agent':        _userAgent,
         },
         body: jsonEncode({
+          'key':           base64Encode(publicKey.bytes),
+          'key_type':      'curve25519',
+          'tunnel_type':   'wireguard',
+          'os_version':   '14.0.0',
           'install_id':    '',
           'fcm_token':     '',
           'tos':           DateTime.now().toUtc().toIso8601String(),
@@ -101,7 +102,7 @@ class WarpService {
         }),
       ).timeout(const Duration(seconds: 15));
 
-      if (res.statusCode != 200) {
+      if (res.statusCode != 200 && res.statusCode != 201) {
         debugPrint('WarpService: register failed ${res.statusCode}');
         return null;
       }
@@ -109,6 +110,7 @@ class WarpService {
       final data   = jsonDecode(res.body) as Map<String, dynamic>;
       final config = data['config'] as Map<String, dynamic>;
       final peers  = config['peers'] as List<dynamic>;
+      if (peers.isEmpty) throw const FormatException('Cloudflare returned no WARP peer');
       final peer   = peers.first as Map<String, dynamic>;
       final iface  = config['interface'] as Map<String, dynamic>;
       final addrs  = iface['addresses'] as Map<String, dynamic>;

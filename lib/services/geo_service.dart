@@ -44,7 +44,7 @@ class GeoService {
     final cached    = prefs.getString('geo_country_code');
     final cachedAt  = prefs.getInt('geo_cached_at') ?? 0;
     final now       = DateTime.now().millisecondsSinceEpoch;
-    final oneDay    = 86400000;
+    const oneDay    = 86400000;
 
     // لو الكاش أقل من يوم → نستخدمه
     if (cached != null && (now - cachedAt) < oneDay) {

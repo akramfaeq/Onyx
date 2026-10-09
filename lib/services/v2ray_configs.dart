@@ -1,62 +1,171 @@
-// ─── Sing-box Config Builder ──────────────────────────────────
-// يبني كونفيغ sing-box JSON كامل لكل mode
+// --- Sing-box Config Builder ----------------------------------
+// يبني config JSON لـ sing-box حسب الـ mode
 
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'warp_service.dart';
 import 'mahsa_service.dart';
 
+// --- VpnServer model ------------------------------------------
+class VpnServer {
+  final String  name;
+  final String  link;                        // v2ray link (ss:// vless:// ...)
+  final Map<String, dynamic>? rawOutbound;  // sing-box outbound مباشر
+
+  // بيانات العرض (من servers.json)
+  final int    ping;
+  final String quality;
+  final String flag;
+  final String country;
+
+  const VpnServer({
+    required this.name,
+    required this.link,
+    this.rawOutbound,
+    this.ping    = 0,
+    this.quality = '',
+    this.flag    = '🌐',
+    this.country = '',
+  });
+}
+
 class V2RayConfigs {
 
-  // ─── DNS ──────────────────────────────────────────────────
+  // --- DNS --------------------------------------------------
   static Map<String, dynamic> _dns({bool blockAds = true}) => {
     'servers': [
-      {'tag': 'cf',    'address': '1.1.1.1',     'detour': 'proxy'},
-      {'tag': 'local', 'address': '8.8.8.8',     'detour': 'direct'},
+      {
+        'tag':              'dns-remote',
+        'address':          'https://1.1.1.1/dns-query',
+        'address_resolver': 'dns-local',
+        'strategy':         'ipv4_only',
+        'detour':           'proxy',
+      },
+      {
+        'tag':      'dns-local',
+        'address':  'https://223.5.5.5/dns-query',
+        'strategy': 'ipv4_only',
+        'detour':   'direct',
+      },
+      {
+        'tag':     'dns-trick',
+        'address': 'https://sky.rethinkdns.com/1:-Pf_____9_78YAA8AJ4BmAEA=',
+        'detour':  'direct-fragment',
+      },
       if (blockAds) {'tag': 'block', 'address': 'rcode://success'},
     ],
     'rules': [
-      {'outbound': 'any', 'server': 'local'},
-      if (blockAds) {'geosite': ['category-ads-all'], 'server': 'block'},
+      {'outbound': 'any',         'server': 'dns-local'},
+      {'clash_mode': 'direct',    'server': 'dns-local'},
+      {
+        'domain': ['sky.rethinkdns.com'],
+        'server': 'dns-trick',
+      },
+      if (blockAds) {
+        'rule_set':  ['geosite-malware', 'geosite-phishing', 'geosite-ads'],
+        'server':    'block',
+        'disable_cache': true,
+      },
     ],
-    'final': 'cf',
+    'final':             'dns-remote',
+    'independent_cache': true,
+    'strategy':          'ipv4_only',
+    'static_ips': {
+      'sky.rethinkdns.com': ['188.114.96.3', '188.114.97.3'],
+    },
   };
 
-  // ─── Inbounds (TUN) ───────────────────────────────────────
+  // --- Inbounds (TUN) ---------------------------------------
   static List<Map<String, dynamic>> _inbounds({List<String> excluded = const []}) => [
     {
-      'type':         'tun',
-      'tag':          'tun-in',
-      'address':      ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-      'auto_route':   true,
-      'strict_route': false,
-      'sniff':        true,
+      'type':           'tun',
+      'tag':            'tun-in',
+      'inet4_address':  '172.19.0.1/30',
+      'inet6_address':  'fdfe:dcba:9876::1/126',
+      'mtu':            9000,
+      'auto_route':     true,
+      'strict_route':   true,   // ✅ مهم: يضمن كل الترافيك يمر عبر الـ tunnel
+      'sniff':          true,
+      'sniff_override_destination': false,
       if (excluded.isNotEmpty) 'exclude_package': excluded,
     }
   ];
 
-  // ─── Route ────────────────────────────────────────────────
+  // --- Rule Sets (remote from hiddify-geo) ------------------
+  static List<Map<String, dynamic>> _ruleSets(String cc) => [
+    {
+      'type':            'remote',
+      'tag':             'geoip-${cc.toLowerCase()}',
+      'format':          'binary',
+      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-ip/geoip-${cc.toLowerCase()}.srs',
+      'download_detour': 'direct',
+      'update_interval': '120h',
+    },
+    {
+      'type':            'remote',
+      'tag':             'geosite-${cc.toLowerCase()}',
+      'format':          'binary',
+      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-${cc.toLowerCase()}.srs',
+      'download_detour': 'direct',
+      'update_interval': '120h',
+    },
+    {
+      'type':            'remote',
+      'tag':             'geosite-malware',
+      'format':          'binary',
+      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-malware.srs',
+      'download_detour': 'direct',
+      'update_interval': '120h',
+    },
+    {
+      'type':            'remote',
+      'tag':             'geosite-phishing',
+      'format':          'binary',
+      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-phishing.srs',
+      'download_detour': 'direct',
+      'update_interval': '120h',
+    },
+    {
+      'type':            'remote',
+      'tag':             'geosite-ads',
+      'format':          'binary',
+      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-category-ads-all.srs',
+      'download_detour': 'direct',
+      'update_interval': '120h',
+    },
+  ];
+
+  // --- Route ------------------------------------------------
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
-      {'protocol':      'dns',                    'outbound': 'dns-out'},
-      {'ip_is_private': true,                     'outbound': 'direct'},
-      if (blockAds) {'geosite': ['category-ads-all'], 'outbound': 'block'},
-      {'geoip':         [cc],                     'outbound': 'direct'},
-      {'geosite':       [cc],                     'outbound': 'direct'},
+      {'protocol': 'dns',   'outbound': 'dns-out'},
+      {'port':     53,      'outbound': 'dns-out'},          // ✅ يحول كل DNS port 53
+      {'ip_is_private': true, 'outbound': 'direct'},
+      if (blockAds) ...[
+        {'rule_set': ['geosite-malware'],  'outbound': 'block'},
+        {'rule_set': ['geosite-phishing'], 'outbound': 'block'},
+        {'rule_set': ['geosite-ads'],      'outbound': 'block'},
+      ],
+      {'rule_set': ['geoip-${cc.toLowerCase()}'],   'outbound': 'direct'},
+      {'rule_set': ['geosite-${cc.toLowerCase()}'], 'outbound': 'direct'},
     ],
+    'rule_set':              _ruleSets(cc),
     'final':                 'proxy',
     'auto_detect_interface': true,
+    'override_android_vpn':  true,
   };
 
   static List<Map<String, dynamic>> _base() => [
-    {'type': 'direct', 'tag': 'direct'},
-    {'type': 'block',  'tag': 'block'},
-    {'type': 'dns',    'tag': 'dns-out'},
+    {'type': 'direct',   'tag': 'direct'},
+    {'type': 'direct',   'tag': 'direct-fragment',
+      'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'}},
+    {'type': 'block',    'tag': 'block'},
+    {'type': 'dns',      'tag': 'dns-out'},
   ];
 
-  // ════════════════════════════════════════════════════════════
-  // ① WARP — WireGuard من Cloudflare
-  // ════════════════════════════════════════════════════════════
+  // ------------------------------------------------------------
+  // ✅ WARP — WireGuard عبر Cloudflare
+  // ------------------------------------------------------------
   static Future<String> warp({
     String countryCode = 'iq',
     List<String> excludedApps = const [],
@@ -64,12 +173,12 @@ class V2RayConfigs {
     bool forceNewKeys = false,
   }) async {
     final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
-
-    final privateKey = keys?.privateKey    ?? '4GgaQCy368kz1QjIHkQMCf35CJ3XeFBUKQfaYkANE1w=';
-    final peerPub    = keys?.peerPublicKey ?? 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=';
-    final reserved   = keys?.reserved      ?? [0, 0, 0];
-    final v4         = keys?.v4Address     ?? '172.16.0.2';
-    final v6         = keys?.v6Address     ?? '2606:4700:110:8f0b::2';
+    if (keys == null) throw StateError('WARP registration failed. Check your internet connection and try again.');
+    final privateKey = keys.privateKey;
+    final peerPub = keys.peerPublicKey;
+    final reserved = keys.reserved;
+    final v4 = keys.v4Address;
+    final v6 = keys.v6Address;
 
     Map<String, dynamic> wg(String tag, int port) => {
       'type':            'wireguard',
@@ -92,9 +201,9 @@ class V2RayConfigs {
           'type':      'urltest',
           'tag':       'proxy',
           'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'url':       'https://www.gstatic.com/generate_204',
-          'interval':  '3m',
-          'tolerance': 50,
+          'url':       'http://cp.cloudflare.com/',
+          'interval':  '10m',
+          'tolerance': 1,
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
@@ -106,11 +215,9 @@ class V2RayConfigs {
     });
   }
 
-  // ════════════════════════════════════════════════════════════
-  // ② PSIPHON — native outbound مدمج في hiddify-core.aar
-  // sing-box يتصل بسيرفرات Psiphon تلقائياً بدون أي إعداد
-  // نفس الطريقة التي يستخدمها hiddify داخلياً
-  // ════════════════════════════════════════════════════════════
+  // ------------------------------------------------------------
+  // ✅ PSIPHON — native outbound مدمج في hiddify-core.aar
+  // ------------------------------------------------------------
   static Future<String> psiphon({
     String countryCode = 'iq',
     List<String> excludedApps = const [],
@@ -131,85 +238,43 @@ class V2RayConfigs {
     });
   }
 
-  // ════════════════════════════════════════════════════════════
-  // ③ WARP via PSIPHON — نفس طريقة Hiddify (warp-plus)
-  //    Psiphon يكون tunnel، Warp يتصل من فوقه
-  //    النتيجة: سرعة WireGuard + نفاذية Psiphon
-  // ════════════════════════════════════════════════════════════
+  // ------------------------------------------------------------
+  // ✅ WARP via PSIPHON
+  // ------------------------------------------------------------
   static Future<String> warpViaPsiphon({
     String countryCode = 'iq',
     List<String> excludedApps = const [],
     bool blockAds = true,
     bool forceNewKeys = false,
   }) async {
-    final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
-
-    final privateKey = keys?.privateKey    ?? '4GgaQCy368kz1QjIHkQMCf35CJ3XeFBUKQfaYkANE1w=';
-    final peerPub    = keys?.peerPublicKey ?? 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=';
-    final reserved   = keys?.reserved      ?? [0, 0, 0];
-    final v4         = keys?.v4Address     ?? '172.16.0.2';
-    final v6         = keys?.v6Address     ?? '2606:4700:110:8f0b::2';
-
-    // Warp WireGuard يتصل عبر Psiphon كـ detour
-    Map<String, dynamic> wgViaPsiphon(String tag, int port) => {
-      'type':            'wireguard',
-      'tag':             tag,
-      'server':          'engage.cloudflareclient.com',
-      'server_port':     port,
-      'local_address':   ['$v4/32', '$v6/128'],
-      'private_key':     privateKey,
-      'peer_public_key': peerPub,
-      'reserved':        reserved,
-      'mtu':             1280,
-      'detour':          'psiphon-out',  // ← هذا هو السر — Warp يمشي عبر Psiphon
-    };
-
     return jsonEncode({
-      'log':      {'level': 'warn'},
-      'dns':      _dns(blockAds: blockAds),
+      'log': {'level': 'warn'},
+      'dns': _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
-        // urltest يختار أسرع Warp port تلقائياً
-        {
-          'type':      'urltest',
-          'tag':       'proxy',
-          'outbounds': ['warp-p-2408', 'warp-p-500', 'warp-p-1701', 'warp-p-4500'],
-          'url':       'https://www.gstatic.com/generate_204',
-          'interval':  '3m',
-          'tolerance': 50,
-        },
-        // 4 ports لـ Warp — كلها تمشي عبر Psiphon
-        wgViaPsiphon('warp-p-2408', 2408),
-        wgViaPsiphon('warp-p-500',  500),
-        wgViaPsiphon('warp-p-1701', 1701),
-        wgViaPsiphon('warp-p-4500', 4500),
-        // Psiphon كـ tunnel تحت Warp
-        {
-          'type': 'psiphon',
-          'tag':  'psiphon-out',
-        },
+        {'type': 'psiphon', 'tag': 'proxy'},
         ..._base(),
       ],
       'route': _route(cc: countryCode, blockAds: blockAds),
     });
   }
 
-  // ════════════════════════════════════════════════════════════
-  // ④ MAHSA — سيرفرات من GitHub
-  // ════════════════════════════════════════════════════════════
+  // ------------------------------------------------------------
+  // ✅ MAHSA — سيرفرات من GitHub
+  // ------------------------------------------------------------
   static Future<String?> mahsa({
     String countryCode = 'iq',
     List<String> excludedApps = const [],
     bool blockAds = true,
   }) async {
-    final links = await MahsaService.getLinks(maxCount: 8);
+    final links = await MahsaService.getLinks();
     if (links.isEmpty) return null;
 
     final outbounds = <Map<String, dynamic>>[];
     for (final link in links) {
       final o = _parseLink(link);
       if (o != null) outbounds.add(o);
-      if (outbounds.length >= 6) break;
+      if (outbounds.length >= 20) break;
     }
     if (outbounds.isEmpty) return null;
 
@@ -221,9 +286,9 @@ class V2RayConfigs {
     );
   }
 
-  // ════════════════════════════════════════════════════════════
-  // ④ CUSTOM — subscription URL
-  // ════════════════════════════════════════════════════════════
+  // ------------------------------------------------------------
+  // ✅ CUSTOM — subscription URL
+  // ------------------------------------------------------------
   static Future<String?> custom({
     required String url,
     String countryCode = 'iq',
@@ -236,22 +301,31 @@ class V2RayConfigs {
           .timeout(const Duration(seconds: 12));
       if (res.statusCode != 200) return null;
 
-      final text  = _tryBase64(res.body.trim());
-      final links = text.split('\n')
-          .map((l) => l.trim())
-          .where((l) =>
-              l.startsWith('vless://')  ||
-              l.startsWith('vmess://')  ||
-              l.startsWith('trojan://') ||
-              l.startsWith('ss://'))
-          .toList();
+      final body = res.body.trim();
+      if (body.startsWith('{')) {
+        final servers = _serversFromSingboxJson(body);
+        final outbounds = servers
+            .where((server) => server.rawOutbound != null)
+            .map((server) => server.rawOutbound!)
+            .take(20)
+            .toList();
+        if (outbounds.isEmpty) return null;
+        return _buildFromOutbounds(
+          outbounds: outbounds,
+          countryCode: countryCode,
+          excludedApps: excludedApps,
+          blockAds: blockAds,
+        );
+      }
+
+      final links = _extractSubscriptionLinks(body);
       if (links.isEmpty) return null;
 
       final outbounds = <Map<String, dynamic>>[];
       for (final link in links) {
         final o = _parseLink(link);
         if (o != null) outbounds.add(o);
-        if (outbounds.length >= 6) break;
+        if (outbounds.length >= 20) break;
       }
       if (outbounds.isEmpty) return null;
 
@@ -266,50 +340,399 @@ class V2RayConfigs {
     }
   }
 
-  // ─── Build from outbounds ─────────────────────────────────
+  // ------------------------------------------------------------
+  // ✅ PARSE SUBSCRIPTION
+  // ------------------------------------------------------------
+  static Future<List<VpnServer>> parseSubscription(String url) async {
+    try {
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent':    'hiddify/2.0 (sing-box compatible)',
+          'Accept':        'application/json, text/plain, */*',
+          'Cache-Control': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (res.statusCode != 200) return [];
+
+      final body = res.body.trim();
+      if (body.isEmpty) return [];
+
+      if (body.startsWith('{')) {
+        return _serversFromSingboxJson(body);
+      }
+
+      final links = _extractSubscriptionLinks(body);
+
+      return links.map((link) {
+        final uri  = Uri.tryParse(link);
+        final name = (uri?.fragment.isNotEmpty == true)
+            ? Uri.decodeComponent(uri!.fragment)
+            : '${uri?.scheme.toUpperCase() ?? 'SERVER'} · ${uri?.host ?? 'Server'}';
+        final countryInfo = _extractCountryFromName(name);
+        return VpnServer(
+          name:    name,
+          link:    link,
+          flag:    countryInfo.$1,
+          country: countryInfo.$2,
+        );
+      }).toList();
+
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // --- Country / Flag extractor from server name -----------
+  static (String, String) _extractCountryFromName(String name) {
+    final lower = name.toLowerCase();
+    const map = <String, (String, String)>{
+      'afghanistan':    ('🇦🇫', 'Afghanistan'),
+      'albania':        ('🇦🇱', 'Albania'),
+      'algeria':        ('🇩🇿', 'Algeria'),
+      'argentina':      ('🇦🇷', 'Argentina'),
+      'armenia':        ('🇦🇲', 'Armenia'),
+      'australia':      ('🇦🇺', 'Australia'),
+      'austria':        ('🇦🇹', 'Austria'),
+      'azerbaijan':     ('🇦🇿', 'Azerbaijan'),
+      'bahrain':        ('🇧🇭', 'Bahrain'),
+      'bangladesh':     ('🇧🇩', 'Bangladesh'),
+      'belarus':        ('🇧🇾', 'Belarus'),
+      'belgium':        ('🇧🇪', 'Belgium'),
+      'brazil':         ('🇧🇷', 'Brazil'),
+      'bulgaria':       ('🇧🇬', 'Bulgaria'),
+      'cambodia':       ('🇰🇭', 'Cambodia'),
+      'canada':         ('🇨🇦', 'Canada'),
+      'chile':          ('🇨🇱', 'Chile'),
+      'china':          ('🇨🇳', 'China'),
+      'colombia':       ('🇨🇴', 'Colombia'),
+      'croatia':        ('🇭🇷', 'Croatia'),
+      'cyprus':         ('🇨🇾', 'Cyprus'),
+      'czech':          ('🇨🇿', 'Czech'),
+      'denmark':        ('🇩🇰', 'Denmark'),
+      'egypt':          ('🇪🇬', 'Egypt'),
+      'estonia':        ('🇪🇪', 'Estonia'),
+      'finland':        ('🇫🇮', 'Finland'),
+      'france':         ('🇫🇷', 'France'),
+      'georgia':        ('🇬🇪', 'Georgia'),
+      'germany':        ('🇩🇪', 'Germany'),
+      'greece':         ('🇬🇷', 'Greece'),
+      'hong kong':      ('🇭🇰', 'Hong Kong'),
+      'hungary':        ('🇭🇺', 'Hungary'),
+      'india':          ('🇮🇳', 'India'),
+      'indonesia':      ('🇮🇩', 'Indonesia'),
+      'iran':           ('🇮🇷', 'Iran'),
+      'iraq':           ('🇮🇶', 'Iraq'),
+      'ireland':        ('🇮🇪', 'Ireland'),
+      'israel':         ('🇮🇱', 'Israel'),
+      'italy':          ('🇮🇹', 'Italy'),
+      'japan':          ('🇯🇵', 'Japan'),
+      'jordan':         ('🇯🇴', 'Jordan'),
+      'kazakhstan':     ('🇰🇿', 'Kazakhstan'),
+      'kuwait':         ('🇰🇼', 'Kuwait'),
+      'latvia':         ('🇱🇻', 'Latvia'),
+      'lebanon':        ('🇱🇧', 'Lebanon'),
+      'lithuania':      ('🇱🇹', 'Lithuania'),
+      'luxembourg':     ('🇱🇺', 'Luxembourg'),
+      'malaysia':       ('🇲🇾', 'Malaysia'),
+      'mexico':         ('🇲🇽', 'Mexico'),
+      'moldova':        ('🇲🇩', 'Moldova'),
+      'mongolia':       ('🇲🇳', 'Mongolia'),
+      'morocco':        ('🇲🇦', 'Morocco'),
+      'netherlands':    ('🇳🇱', 'Netherlands'),
+      'new zealand':    ('🇳🇿', 'New Zealand'),
+      'nigeria':        ('🇳🇬', 'Nigeria'),
+      'norway':         ('🇳🇴', 'Norway'),
+      'oman':           ('🇴🇲', 'Oman'),
+      'pakistan':       ('🇵🇰', 'Pakistan'),
+      'palestine':      ('🇵🇸', 'Palestine'),
+      'philippines':    ('🇵🇭', 'Philippines'),
+      'poland':         ('🇵🇱', 'Poland'),
+      'portugal':       ('🇵🇹', 'Portugal'),
+      'qatar':          ('🇶🇦', 'Qatar'),
+      'romania':        ('🇷🇴', 'Romania'),
+      'russia':         ('🇷🇺', 'Russia'),
+      'saudi':          ('🇸🇦', 'Saudi Arabia'),
+      'serbia':         ('🇷🇸', 'Serbia'),
+      'singapore':      ('🇸🇬', 'Singapore'),
+      'slovakia':       ('🇸🇰', 'Slovakia'),
+      'south africa':   ('🇿🇦', 'South Africa'),
+      'south korea':    ('🇰🇷', 'South Korea'),
+      'spain':          ('🇪🇸', 'Spain'),
+      'sweden':         ('🇸🇪', 'Sweden'),
+      'switzerland':    ('🇨🇭', 'Switzerland'),
+      'syria':          ('🇸🇾', 'Syria'),
+      'taiwan':         ('🇹🇼', 'Taiwan'),
+      'thailand':       ('🇹🇭', 'Thailand'),
+      'tunisia':        ('🇹🇳', 'Tunisia'),
+      'turkey':         ('🇹🇷', 'Turkey'),
+      'turkiye':        ('🇹🇷', 'Turkey'),
+      'ukraine':        ('🇺🇦', 'Ukraine'),
+      'united arab':    ('🇦🇪', 'UAE'),
+      'uae':            ('🇦🇪', 'UAE'),
+      'united kingdom': ('🇬🇧', 'UK'),
+      'united states':  ('🇺🇸', 'USA'),
+      'uzbekistan':     ('🇺🇿', 'Uzbekistan'),
+      'venezuela':      ('🇻🇪', 'Venezuela'),
+      'vietnam':        ('🇻🇳', 'Vietnam'),
+      'yemen':          ('🇾🇪', 'Yemen'),
+      ' af ':  ('🇦🇫', 'Afghanistan'),
+      ' al ':  ('🇦🇱', 'Albania'),
+      ' am ':  ('🇦🇲', 'Armenia'),
+      ' at ':  ('🇦🇹', 'Austria'),
+      ' au ':  ('🇦🇺', 'Australia'),
+      ' az ':  ('🇦🇿', 'Azerbaijan'),
+      ' be ':  ('🇧🇪', 'Belgium'),
+      ' bg ':  ('🇧🇬', 'Bulgaria'),
+      ' br ':  ('🇧🇷', 'Brazil'),
+      ' by ':  ('🇧🇾', 'Belarus'),
+      ' ca ':  ('🇨🇦', 'Canada'),
+      ' ch ':  ('🇨🇭', 'Switzerland'),
+      ' cn ':  ('🇨🇳', 'China'),
+      ' cy ':  ('🇨🇾', 'Cyprus'),
+      ' cz ':  ('🇨🇿', 'Czech'),
+      ' de ':  ('🇩🇪', 'Germany'),
+      ' dk ':  ('🇩🇰', 'Denmark'),
+      ' ee ':  ('🇪🇪', 'Estonia'),
+      ' eg ':  ('🇪🇬', 'Egypt'),
+      ' es ':  ('🇪🇸', 'Spain'),
+      ' fi ':  ('🇫🇮', 'Finland'),
+      ' fr ':  ('🇫🇷', 'France'),
+      ' gb ':  ('🇬🇧', 'UK'),
+      ' ge ':  ('🇬🇪', 'Georgia'),
+      ' gr ':  ('🇬🇷', 'Greece'),
+      ' hk ':  ('🇭🇰', 'Hong Kong'),
+      ' hr ':  ('🇭🇷', 'Croatia'),
+      ' hu ':  ('🇭🇺', 'Hungary'),
+      ' id ':  ('🇮🇩', 'Indonesia'),
+      ' ie ':  ('🇮🇪', 'Ireland'),
+      ' il ':  ('🇮🇱', 'Israel'),
+      ' in ':  ('🇮🇳', 'India'),
+      ' iq ':  ('🇮🇶', 'Iraq'),
+      ' ir ':  ('🇮🇷', 'Iran'),
+      ' it ':  ('🇮🇹', 'Italy'),
+      ' jo ':  ('🇯🇴', 'Jordan'),
+      ' jp ':  ('🇯🇵', 'Japan'),
+      ' kr ':  ('🇰🇷', 'South Korea'),
+      ' kw ':  ('🇰🇼', 'Kuwait'),
+      ' kz ':  ('🇰🇿', 'Kazakhstan'),
+      ' lb ':  ('🇱🇧', 'Lebanon'),
+      ' lt ':  ('🇱🇹', 'Lithuania'),
+      ' lu ':  ('🇱🇺', 'Luxembourg'),
+      ' lv ':  ('🇱🇻', 'Latvia'),
+      ' ma ':  ('🇲🇦', 'Morocco'),
+      ' md ':  ('🇲🇩', 'Moldova'),
+      ' mx ':  ('🇲🇽', 'Mexico'),
+      ' my ':  ('🇲🇾', 'Malaysia'),
+      ' ng ':  ('🇳🇬', 'Nigeria'),
+      ' nl ':  ('🇳🇱', 'Netherlands'),
+      ' no ':  ('🇳🇴', 'Norway'),
+      ' nz ':  ('🇳🇿', 'New Zealand'),
+      ' om ':  ('🇴🇲', 'Oman'),
+      ' ph ':  ('🇵🇭', 'Philippines'),
+      ' pk ':  ('🇵🇰', 'Pakistan'),
+      ' pl ':  ('🇵🇱', 'Poland'),
+      ' ps ':  ('🇵🇸', 'Palestine'),
+      ' pt ':  ('🇵🇹', 'Portugal'),
+      ' qa ':  ('🇶🇦', 'Qatar'),
+      ' ro ':  ('🇷🇴', 'Romania'),
+      ' rs ':  ('🇷🇸', 'Serbia'),
+      ' ru ':  ('🇷🇺', 'Russia'),
+      ' sa ':  ('🇸🇦', 'Saudi Arabia'),
+      ' se ':  ('🇸🇪', 'Sweden'),
+      ' sg ':  ('🇸🇬', 'Singapore'),
+      ' sk ':  ('🇸🇰', 'Slovakia'),
+      ' sy ':  ('🇸🇾', 'Syria'),
+      ' th ':  ('🇹🇭', 'Thailand'),
+      ' tn ':  ('🇹🇳', 'Tunisia'),
+      ' tr ':  ('🇹🇷', 'Turkey'),
+      ' tw ':  ('🇹🇼', 'Taiwan'),
+      ' ua ':  ('🇺🇦', 'Ukraine'),
+      ' uk ':  ('🇬🇧', 'UK'),
+      ' us ':  ('🇺🇸', 'USA'),
+      ' uz ':  ('🇺🇿', 'Uzbekistan'),
+      ' vn ':  ('🇻🇳', 'Vietnam'),
+      ' ye ':  ('🇾🇪', 'Yemen'),
+      ' za ':  ('🇿🇦', 'South Africa'),
+    };
+
+    final padded = ' $lower ';
+    for (final entry in map.entries) {
+      if (padded.contains(entry.key)) return entry.value;
+    }
+    return ('🌐', '');
+  }
+
+  static List<VpnServer> _serversFromSingboxJson(String raw) {
+    try {
+      final config     = jsonDecode(raw) as Map<String, dynamic>;
+      final outbounds  = config['outbounds'] as List<dynamic>? ?? [];
+      final skipTypes  = {'selector', 'urltest', 'direct', 'block', 'dns'};
+      final servers    = <VpnServer>[];
+
+      for (final ob in outbounds) {
+        final m    = ob as Map<String, dynamic>;
+        final type = m['type'] as String? ?? '';
+        final tag  = m['tag']  as String? ?? '';
+        if (skipTypes.contains(type) || !_supportedOutboundTypes.contains(type)) continue;
+
+        final server = m['server'] as String? ?? '';
+        final port   = m['server_port']?.toString() ?? '';
+        if (server.isEmpty) continue;
+        final label       = tag.isNotEmpty ? tag : '$type · $server:$port';
+        final countryInfo = _extractCountryFromName(label);
+        servers.add(VpnServer(
+          name:        label,
+          link:        '',
+          rawOutbound: m,
+          flag:        countryInfo.$1,
+          country:     countryInfo.$2,
+        ));
+      }
+      return servers;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // بناء config لسيرفر واحد محدد
+  static Future<String?> buildForServer({
+    required String url,
+    required VpnServer server,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    if (server.rawOutbound != null) {
+      return _buildFromOutbounds(
+        outbounds:    [server.rawOutbound!],
+        countryCode:  countryCode,
+        excludedApps: excludedApps,
+        blockAds:     blockAds,
+      );
+    }
+
+    if (server.link.isNotEmpty) {
+      final ob = _parseLink(server.link);
+      if (ob == null) return null;
+      return _buildFromOutbounds(
+        outbounds:    [ob],
+        countryCode:  countryCode,
+        excludedApps: excludedApps,
+        blockAds:     blockAds,
+      );
+    }
+
+    return custom(
+      url:          url,
+      countryCode:  countryCode,
+      excludedApps: excludedApps,
+      blockAds:     blockAds,
+    );
+  }
+
+  // --- Build from server list (GitHub JSON) -----------------
+  static Future<String?> buildFromServerList({
+    required List<VpnServer> servers,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    final outbounds = <Map<String, dynamic>>[];
+    for (final s in servers) {
+      if (s.rawOutbound != null) {
+        outbounds.add(s.rawOutbound!);
+      } else if (s.link.isNotEmpty) {
+        final ob = _parseLink(s.link);
+        if (ob != null) outbounds.add(ob);
+      }
+      if (outbounds.length >= 12) break;
+    }
+    if (outbounds.isEmpty) return null;
+    return _buildFromOutbounds(
+      outbounds:    outbounds,
+      countryCode:  countryCode,
+      excludedApps: excludedApps,
+      blockAds:     blockAds,
+    );
+  }
+
+  // --- Build from outbounds ---------------------------------
   static String _buildFromOutbounds({
     required List<Map<String, dynamic>> outbounds,
     String countryCode = 'iq',
     List<String> excludedApps = const [],
     bool blockAds = true,
   }) {
-    final tags = outbounds.map((o) => o['tag'] as String).toList();
+    final safeOutbounds = <Map<String, dynamic>>[];
+    final usedTags = <String>{};
+    for (var i = 0; i < outbounds.length; i++) {
+      final outbound = Map<String, dynamic>.from(outbounds[i]);
+      final originalTag = outbound['tag'] as String?;
+      var tag = originalTag?.trim().isNotEmpty == true
+          ? originalTag!.trim()
+          : 'server-${i + 1}';
+      var suffix = 2;
+      while (!usedTags.add(tag)) {
+        tag = '${originalTag ?? 'server-${i + 1}'}-${suffix++}';
+      }
+      outbound['tag'] = tag;
+      safeOutbounds.add(outbound);
+    }
+    if (safeOutbounds.isEmpty) {
+      throw const FormatException('No supported VPN servers were found.');
+    }
+    final tags = safeOutbounds.map((o) => o['tag'] as String).toList();
     return jsonEncode({
       'log':      {'level': 'warn'},
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
         {
-          'type':      'urltest',
-          'tag':       'proxy',
-          'outbounds': tags,
-          'url':       'https://www.gstatic.com/generate_204',
-          'interval':  '3m',
-          'tolerance': 50,
+          'type':                        'urltest',
+          'tag':                         'proxy',
+          'outbounds':                   tags,
+          'url':                         'http://www.gstatic.com/generate_204',
+          'interval':                    '10m',
+          'tolerance':                   1,
+          'idle_timeout':                '30m',
+          'interrupt_exist_connections': true,   // ✅ يبدل فوري لو لاقى أسرع
         },
-        ...outbounds,
+        {
+          'type':      'urltest',
+          'tag':       'proxy-fallback',
+          'outbounds': tags,
+          'url':       'http://www.gstatic.com/generate_204',
+          'interval':  '30s',   // ✅ فحص سريع لو الكل فاشل
+          'tolerance': 500,
+          'idle_timeout': '5m',
+          'interrupt_exist_connections': true,
+        },
+        ...safeOutbounds,
         ..._base(),
       ],
       'route': _route(cc: countryCode, blockAds: blockAds),
     });
   }
 
-  // ─── Link Parser ──────────────────────────────────────────
+  // --- Link Parser ------------------------------------------
   static Map<String, dynamic>? _parseLink(String link) {
     try {
-      final uri = Uri.parse(link);
+      final normalizedLink = link.trim().replaceFirst('﻿', '');
+      final uri = Uri.parse(normalizedLink);
       final tag = uri.fragment.isNotEmpty
           ? Uri.decodeComponent(uri.fragment)
           : 'srv-${link.hashCode.abs() % 9999}';
 
-      if (link.startsWith('vless://')) {
+      if (uri.scheme == 'vless') {
         final p = uri.queryParameters;
         return {
           'type':        'vless',
           'tag':         tag,
           'server':      uri.host,
           'server_port': uri.port,
-          'uuid':        uri.userInfo,
+          'uuid':        Uri.decodeComponent(uri.userInfo),
           if ((p['flow'] ?? '').isNotEmpty) 'flow': p['flow'],
           'tls': {
             'enabled':     p['security'] == 'tls' || p['security'] == 'reality',
@@ -328,14 +751,14 @@ class V2RayConfigs {
         };
       }
 
-      if (link.startsWith('trojan://')) {
+      if (uri.scheme == 'trojan') {
         final p = uri.queryParameters;
         return {
           'type':        'trojan',
           'tag':         tag,
           'server':      uri.host,
           'server_port': uri.port,
-          'password':    uri.userInfo,
+          'password':    Uri.decodeComponent(uri.userInfo),
           'tls': {
             'enabled':     true,
             'server_name': p['sni'] ?? uri.host,
@@ -346,8 +769,8 @@ class V2RayConfigs {
         };
       }
 
-      if (link.startsWith('vmess://')) {
-        final raw     = link.substring(8);
+      if (uri.scheme == 'vmess') {
+        final raw     = normalizedLink.substring(normalizedLink.indexOf('://') + 3);
         final padded  = raw + '=' * ((4 - raw.length % 4) % 4);
         final decoded = jsonDecode(utf8.decode(base64.decode(padded))) as Map<String, dynamic>;
         return {
@@ -358,17 +781,28 @@ class V2RayConfigs {
           'uuid':        decoded['id'],
           'security':    decoded['scy'] ?? 'auto',
           'alter_id':    int.tryParse(decoded['aid'].toString()) ?? 0,
-          'tls': {'enabled': decoded['tls'] == 'tls'},
+          'tls': {
+            'enabled': decoded['tls'] == 'tls',
+            if ((decoded['sni'] ?? '').toString().isNotEmpty)
+              'server_name': decoded['sni'],
+            if (decoded['tls'] == 'tls')
+              'utls': {
+                'enabled': true,
+                'fingerprint': (decoded['fp'] ?? 'chrome').toString(),
+              },
+          },
           if (decoded['net'] != null && decoded['net'] != 'tcp')
             'transport': {
               'type': decoded['net'],
-              if (decoded['path'] != null) 'path': decoded['path'],
-              if (decoded['host'] != null) 'headers': {'Host': decoded['host']},
+              if (decoded['path'] != null && decoded['path'].toString().isNotEmpty)
+                'path': decoded['path'],
+              if (decoded['host'] != null && decoded['host'].toString().isNotEmpty)
+                'headers': {'Host': decoded['host']},
             },
         };
       }
 
-      if (link.startsWith('ss://')) {
+      if (uri.scheme == 'ss') {
         final userInfo = uri.userInfo;
         final decoded  = utf8.decode(base64.decode(
             userInfo + '=' * ((4 - userInfo.length % 4) % 4)));
@@ -383,6 +817,91 @@ class V2RayConfigs {
             'password':    decoded.substring(idx + 1),
           };
         }
+      }
+
+      if (uri.scheme == 'hysteria2' || uri.scheme == 'hy2') {
+        final p = uri.queryParameters;
+        final upMbps = int.tryParse(p['upmbps'] ?? '');
+        final downMbps = int.tryParse(p['downmbps'] ?? '');
+        final tls = <String, dynamic>{
+          'enabled': true,
+          'server_name': p['sni'] ?? uri.host,
+          if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+          if (p['alpn']?.isNotEmpty == true) 'alpn': p['alpn']!.split(','),
+          'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+        };
+        final obfs = p['obfs'];
+        return {
+          'type': 'hysteria2',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'password': Uri.decodeComponent(uri.userInfo),
+          'tls': tls,
+          if (obfs?.isNotEmpty == true)
+            'obfs': {
+              'type': obfs,
+              if (p['obfs-password']?.isNotEmpty == true)
+                'password': p['obfs-password'],
+            },
+          if (upMbps != null) 'up_mbps': upMbps,
+          if (downMbps != null) 'down_mbps': downMbps,
+        };
+      }
+
+      if (uri.scheme == 'tuic') {
+        final p = uri.queryParameters;
+        final credentials = Uri.decodeComponent(uri.userInfo).split(':');
+        if (credentials.length < 2) return null;
+        return {
+          'type': 'tuic',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'uuid': credentials.first,
+          'password': credentials.skip(1).join(':'),
+          'congestion_control': p['congestion_control'] ?? p['cc'] ?? 'bbr',
+          'udp_relay_mode': p['udp_relay_mode'] ?? 'native',
+          'tls': {
+            'enabled': true,
+            'server_name': p['sni'] ?? uri.host,
+            if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+            'alpn': p['alpn']?.split(',') ?? ['h3'],
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+        };
+      }
+
+      if (uri.scheme == 'anytls') {
+        final p = uri.queryParameters;
+        return {
+          'type': 'anytls',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'password': Uri.decodeComponent(uri.userInfo),
+          'tls': {
+            'enabled': true,
+            'server_name': p['sni'] ?? uri.host,
+            if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+        };
+      }
+
+      if (uri.scheme == 'socks' || uri.scheme == 'socks5') {
+        final credentials = uri.userInfo.isEmpty
+            ? const <String>[]
+            : Uri.decodeComponent(uri.userInfo).split(':');
+        return {
+          'type': 'socks',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'version': '5',
+          if (credentials.isNotEmpty) 'username': credentials.first,
+          if (credentials.length > 1) 'password': credentials.skip(1).join(':'),
+        };
       }
     } catch (_) {}
     return null;
@@ -406,5 +925,28 @@ class V2RayConfigs {
       }
     } catch (_) {}
     return input;
+  }
+
+  static const _supportedOutboundTypes = {
+    'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'anytls',
+    'socks', 'http', 'wireguard',
+  };
+
+  static List<String> _extractSubscriptionLinks(String body) {
+    final text = _tryBase64(body.trim()).replaceFirst('﻿', '');
+    const schemes = {
+      'vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'tuic',
+      'anytls', 'socks', 'socks5',
+    };
+    return text
+        .split(RegExp(r'[\r\n]+'))
+        .map((line) => line.trim())
+        .where((line) {
+          if (line.isEmpty || line.startsWith('#') || line.startsWith('//')) return false;
+          final scheme = Uri.tryParse(line)?.scheme.toLowerCase();
+          return scheme != null && schemes.contains(scheme);
+        })
+        .toSet()
+        .toList();
   }
 }
