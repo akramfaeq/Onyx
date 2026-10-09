@@ -84,7 +84,7 @@ class SettingsScreen extends StatelessWidget {
               trailing: Switch(
                 value: vpn.autoSpeedTest,
                 onChanged: vpn.isConnected ? null : (v) => vpn.setAutoSpeedTest(v),
-                activeThumbColor: const Color(0xFF8B5CF6),
+                thumbColor: WidgetStateProperty.all(const Color(0xFF8B5CF6)),
               ),
             ),
           ],
@@ -190,7 +190,7 @@ class _ToggleTile extends StatelessWidget {
         Switch(
           value: value,
           onChanged: onChanged,
-          activeThumbColor: color,
+          thumbColor: WidgetStateProperty.all(color),
         ),
       ],
     ),
@@ -264,7 +264,7 @@ class _AppToggle extends StatelessWidget {
         Switch(
           value: enabled,
           onChanged: onToggle,
-          activeThumbColor: const Color(0xFF8B5CF6),
+          thumbColor: WidgetStateProperty.all(const Color(0xFF8B5CF6)),
         ),
       ],
     ),
