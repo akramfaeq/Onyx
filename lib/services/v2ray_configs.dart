@@ -746,17 +746,13 @@ class V2RayConfigs {
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
         {
-          'type':                        'urltest',
-          'tag':                         'proxy',
-          'outbounds':                   tags,
-          'url':                         'https://www.gstatic.com/generate_204',
-          'interval':                    '10m',
-          'tolerance':                   150,   // FIX: كان 1ms → يسبب تبديل سيرفر عند كل اختبار
-          'idle_timeout':                '30m',
-          'interrupt_exist_connections': false,  // FIX: كان true → يقطع الاتصال عند كل تبديل
+          // FIX: selector بدل urltest — hiddify-core القديم يحول urltest+outbounds
+          // لـ balancer داخلياً ويفشل بـ "unknown load balancer"
+          'type':     'selector',
+          'tag':      'proxy',
+          'outbounds': tags,
+          'default':  tags.first,
         },
-        // FIX: حذف proxy-fallback — كان يختبر كل 30 ثانية ويقطع الاتصال باستمرار
-        // sing-box يتعامل مع الفشل تلقائياً عبر proxy الرئيسي
         ...safeOutbounds,
         ..._base(),
       ],
