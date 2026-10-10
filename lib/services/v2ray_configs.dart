@@ -293,7 +293,8 @@ class V2RayConfigs {
     final v4         = keys.v4Address;
     final v6         = keys.v6Address;
 
-    // نفس بنية warp() — الكور يضيف Psiphon كـ detour عند warpOverProxy: true
+    // FIX: نضيف 'detour': 'psiphon-out' صراحةً في كل WireGuard outbound
+    // الكور يحتاج يشوفه في الـ config نفسه — warpOverProxy وحده ما يكفي
     Map<String, dynamic> wg(String tag, int port) => {
       'type':            'wireguard',
       'tag':             tag,
@@ -304,6 +305,7 @@ class V2RayConfigs {
       'peer_public_key': peerPub,
       'reserved':        reserved,
       'mtu':             1280,
+      'detour':          'psiphon-out',  // FIX: WARP يمشي عبر Psiphon
     };
 
     return jsonEncode({

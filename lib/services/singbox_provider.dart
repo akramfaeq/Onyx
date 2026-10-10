@@ -76,7 +76,7 @@ class SingboxProvider extends ChangeNotifier {
 
   // Connection timeout — هايدفاي يستخدم 30 ثانية
   Timer? _connectTimeoutTimer;
-  static const _connectTimeout = Duration(seconds: 30);
+  static const _connectTimeout = Duration(seconds: 15);
 
   // ─── Getters ─────────────────────────────────────────────────────
   VpnState        get state          => _state;
@@ -426,6 +426,7 @@ class SingboxProvider extends ChangeNotifier {
     // ─── إعادة تعيين الـ fallback عند ضغطة يدوية ─────────────────
     _fallbackIndex     = 0;
     _reconnectAttempts = 0;
+    _userChangedMode   = false;  // FIX: يسمح للـ fallback chain يشتغل من جديد
     if (_state == VpnState.failed) await _clearConfigCache();
     await _connect(++_connectionRevision);
   }
@@ -443,7 +444,7 @@ class SingboxProvider extends ChangeNotifier {
     _status = 'Preparing...';
     notifyListeners();
 
-    // ─── ③ Connection Timeout — هايدفاي 30 ثانية ─────────────────
+    // ─── ③ Connection Timeout — هايدفاي 15 ثانية ─────────────────
     _connectTimeoutTimer?.cancel();
     _connectTimeoutTimer = Timer(_connectTimeout, () {
       if (_state == VpnState.connecting) {

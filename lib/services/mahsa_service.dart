@@ -159,7 +159,7 @@ class MahsaService {
       final res = await http.get(Uri.parse(url), headers: {
         'User-Agent': 'HiddifyNext/2.0 (compatible; sing-box)',
         'Accept':     '*/*',
-      }).timeout(const Duration(seconds: 12));
+      }).timeout(const Duration(seconds: 8));  // FIX: 12→8 ثواني لتسريع الـ fallback
       if (res.statusCode != 200) return [];
       return _parseBody(res.body.trim());
     } catch (e) {

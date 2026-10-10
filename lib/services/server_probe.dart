@@ -29,9 +29,9 @@ class ProbeResult {
 class ServerProbe {
 
   // ─── إعدادات نفس هايدفاي ──────────────────────────────────────
-  static const _probeTimeout  = Duration(seconds: 3);
+  static const _probeTimeout  = Duration(seconds: 4);  // FIX: 3→4 لتجنب false negatives على الشبكات البطيئة
   static const _maxConcurrent = 10;
-  static const _maxToPass     = 8;    // أفضل 8 للـ sing-box
+  static const _maxToPass     = 10;   // FIX: 8→10 للـ sing-box — urltest يختار الأسرع
 
   /// الواجهة الرئيسية
   /// يأخذ raw links، يختبرهم بالتوازي، يرجع الأحياء مرتبين تصاعدياً

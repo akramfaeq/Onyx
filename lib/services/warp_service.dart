@@ -48,9 +48,10 @@ class WarpKeys {
 
 class WarpService {
   static const _prefKey   = 'warp_keys_v3';
-  static const _apiBase   = 'https://api.cloudflareclient.com/v0a5641';
-  static const _cfVersion = 'a-6.38.9-5641';
-  static const _userAgent = '1.1.1.1/6.38.9-5641 (Android 14.0.0)';
+  // FIX: نفس الـ endpoint الحالي اللي هايدفاي يستخدمه
+  static const _apiBase   = 'https://api.cloudflareclient.com/v0a4005';
+  static const _cfVersion = 'a-6.30-4005';
+  static const _userAgent = '1.1.1.1/6.30-4005 (Android 14.0.0)';
 
   static WarpKeys? _cached;
 

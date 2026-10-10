@@ -49,9 +49,10 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         const val NOTIF_ID     = 100
         const val CHANNEL_ID   = "onyx_vpn"
 
-    @Volatile var instance: OnyxVpnService? = null
-    @Volatile var isRunning = false
-    private val starting = AtomicBoolean(false)
+        // FIX: نقلنا isRunning و starting لـ companion بشكل صحيح مع @Volatile
+        @Volatile var instance: OnyxVpnService? = null
+        @Volatile var isRunning = false
+        val starting = AtomicBoolean(false)  // FIX: private → internal لأن startVpn يستخدمه
     }
 
     private val scope  = CoroutineScope(Dispatchers.IO + SupervisorJob())
