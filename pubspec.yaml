@@ -11,6 +11,7 @@ dependencies:
   # ─── Network ─────────────────────────────────────────────
   http: ^1.2.0
   cryptography: ^2.7.0
+  connectivity_plus: ^6.0.3
 
   # ─── State Management ────────────────────────────────────
   provider: ^6.1.2

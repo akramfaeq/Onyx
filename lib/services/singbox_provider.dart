@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/vpn_mode.dart';
 import 'v2ray_configs.dart';
 import 'warp_service.dart';
@@ -102,6 +103,10 @@ class SingboxProvider extends ChangeNotifier {
   StreamSubscription? _statusSub;
   int _connectionRevision = 0;
 
+  // ─── Network Change Detection (هايدفاي) ──────────────────────────
+  StreamSubscription? _connectivitySub;
+  List<ConnectivityResult> _lastConnectivity = [];
+
   // ─── SharedPreferences keys ──────────────────────────────────────
   static const _prefCustomUrl      = 'custom_url';
   static const _prefExcludedApps   = 'excluded_apps';
@@ -130,6 +135,9 @@ class SingboxProvider extends ChangeNotifier {
 
     _statusSub = _events.receiveBroadcastStream().listen(_onNativeStatus);
 
+    // ─── Network Change Detection ─────────────────────────────────
+    _startNetworkMonitoring();
+
     await GeoService.load();
     _mode = _bestMode();
 
@@ -140,6 +148,51 @@ class SingboxProvider extends ChangeNotifier {
     loadOnyxServers();
 
     notifyListeners();
+  }
+
+  // ─── Network Monitoring — نفس ConnectivityController في هايدفاي ────
+  void _startNetworkMonitoring() {
+    _connectivitySub?.cancel();
+    _connectivitySub = Connectivity().onConnectivityChanged.listen(
+      (List<ConnectivityResult> results) {
+        final hasConnection = results.any((r) => r != ConnectivityResult.none);
+        final hadConnection = _lastConnectivity.any((r) => r != ConnectivityResult.none);
+
+        debugPrint('SingboxProvider: network changed → $results');
+
+        // لو كان في اتصال شبكة وتغيّر النوع (WiFi ↔ Data)
+        if (hasConnection && _lastConnectivity.isNotEmpty) {
+          final changed = !results.toSet().containsAll(_lastConnectivity) ||
+                          !_lastConnectivity.toSet().containsAll(results);
+          if (changed && isConnected) {
+            debugPrint('SingboxProvider: network type changed → reconnecting');
+            Future.delayed(const Duration(milliseconds: 800), () {
+              if (isConnected) {
+                disconnect().then((_) {
+                  Future.delayed(const Duration(milliseconds: 500), () {
+                    connect();
+                  });
+                });
+              }
+            });
+          }
+        }
+
+        // لو رجع الإنترنت بعد ما كان مقطوع
+        if (hasConnection && !hadConnection) {
+          debugPrint('SingboxProvider: internet restored → reconnecting');
+          Future.delayed(const Duration(seconds: 1), () {
+            if (_state == VpnState.failed || _state == VpnState.disconnected) {
+              _reconnectAttempts = 0;
+              _fallbackIndex     = 0;
+              connect();
+            }
+          });
+        }
+
+        _lastConnectivity = results;
+      },
+    );
   }
 
   VpnMode _bestMode() {
@@ -821,6 +874,7 @@ class SingboxProvider extends ChangeNotifier {
   @override
   void dispose() {
     _statusSub?.cancel();
+    _connectivitySub?.cancel();
     _connectTimeoutTimer?.cancel();
     _stopTimers();
     super.dispose();

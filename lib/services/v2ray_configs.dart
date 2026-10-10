@@ -53,10 +53,25 @@ class V2RayConfigs {
         'address': 'https://sky.rethinkdns.com/1:-Pf_____9_78YAA8AJ4BmAEA=',
         'detour':  'direct-fragment',
       },
+      // hosts server بدل الـ hosts field المحذوفة في sing-box v1.12+
+      {
+        'type': 'hosts',
+        'tag':  'dns-hosts',
+        'predefined': {
+          'sky.rethinkdns.com': ['188.114.96.3', '188.114.97.3'],
+        },
+      },
       if (blockAds) {'tag': 'block', 'address': 'rcode://success'},
     ],
     'rules': [
-      {'outbound': 'any',         'server': 'dns-local'},
+      // hosts rule أول شي قبل أي rule ثاني
+      {
+        'server':     'dns-hosts',
+        'query_type': ['A', 'AAAA'],
+        'domain':     ['sky.rethinkdns.com'],
+      },
+      // 'outbound: any' deprecated في sing-box 1.11+ — بدّلناها بـ action: route مع inbound
+      {'clash_mode': 'global',    'server': 'dns-remote'},
       {'clash_mode': 'direct',    'server': 'dns-local'},
       {
         'domain': ['sky.rethinkdns.com'],
@@ -71,9 +86,6 @@ class V2RayConfigs {
     'final':             'dns-remote',
     'independent_cache': true,
     'strategy':          'ipv4_only',
-    'hosts': {
-      'sky.rethinkdns.com': ['188.114.96.3', '188.114.97.3'],
-    },
   };
 
   // --- Inbounds (TUN) ---------------------------------------
