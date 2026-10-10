@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'warp_service.dart';
 import 'mahsa_service.dart';
+import 'server_probe.dart';
 
 // --- VpnServer model ------------------------------------------
 class VpnServer {
@@ -326,14 +327,14 @@ class V2RayConfigs {
     List<String> excludedApps = const [],
     bool blockAds = true,
   }) async {
-    final links = await MahsaService.getLinks();
+    // ─── هايدفاي: probe أولاً، اتصل بالأفضل ───────────────────
+    final links = await MahsaService.getProbed();
     if (links.isEmpty) return null;
 
     final outbounds = <Map<String, dynamic>>[];
     for (final link in links) {
       final o = _parseLink(link);
       if (o != null) outbounds.add(o);
-      if (outbounds.length >= 20) break;
     }
     if (outbounds.isEmpty) return null;
 

@@ -1,6 +1,7 @@
-// ─── الـ 5 خيارات الرئيسية للتطبيق ───────────────────────────
+// ─── الـ modes الرئيسية ─────────────────────────────────────────────
+// patterniha: مصدر ثاني في الـ fallback chain (داخلي فقط، مو في الـ UI)
 
-enum VpnMode { warp, psiphon, warpPsiphon, mahsa, pythonServers, custom }
+enum VpnMode { warp, psiphon, warpPsiphon, mahsa, patterniha, pythonServers, custom }
 
 class VpnModeInfo {
   final VpnMode mode;
@@ -17,7 +18,6 @@ class VpnModeInfo {
     required this.tag,
   });
 
-  // Warp → Cloudflare WireGuard config ثابت
   static const warp = VpnModeInfo(
     mode:     VpnMode.warp,
     name:     'Warp',
@@ -26,7 +26,6 @@ class VpnModeInfo {
     tag:      'CF',
   );
 
-  // Psiphon → sing-box outbound من نوع psiphon
   static const psiphon = VpnModeInfo(
     mode:     VpnMode.psiphon,
     name:     'Psiphon',
@@ -35,8 +34,6 @@ class VpnModeInfo {
     tag:      'Bypass',
   );
 
-  // Warp + Psiphon → نفس طريقة Hiddify (سرعة + نفاذية)
-  // Warp يتصل عبر Psiphon — يجمع سرعة WireGuard مع نفاذية Psiphon
   static const warpPsiphon = VpnModeInfo(
     mode:     VpnMode.warpPsiphon,
     name:     'Warp+',
@@ -45,7 +42,6 @@ class VpnModeInfo {
     tag:      'Fast',
   );
 
-  // Mahsa → subscription link من GitHub (Reality/VLESS)
   static const mahsa = VpnModeInfo(
     mode:     VpnMode.mahsa,
     name:     'Mahsa',
@@ -54,15 +50,23 @@ class VpnModeInfo {
     tag:      'Mix',
   );
 
-  static const pythonServers = VpnModeInfo(
-    mode: VpnMode.pythonServers,
-    name: 'Python Servers',
-    subtitle: 'Fast community servers',
-    emoji: '🌍',
-    tag: 'FAST',
+  // patterniha — في الـ fallback chain فقط، مو في الـ UI
+  static const patterniha = VpnModeInfo(
+    mode:     VpnMode.patterniha,
+    name:     'Patterniha',
+    subtitle: 'Community servers',
+    emoji:    '🌐',
+    tag:      'ALT',
   );
 
-  // Custom → المستخدم يحط رابطه
+  static const pythonServers = VpnModeInfo(
+    mode:     VpnMode.pythonServers,
+    name:     'Python Servers',
+    subtitle: 'Fast community servers',
+    emoji:    '🌍',
+    tag:      'FAST',
+  );
+
   static const custom = VpnModeInfo(
     mode:     VpnMode.custom,
     name:     'Add Link',
@@ -71,5 +75,6 @@ class VpnModeInfo {
     tag:      '',
   );
 
+  // الـ UI يعرض هذي فقط — patterniha مخفية (fallback داخلي)
   static const all = [warpPsiphon, mahsa, pythonServers, custom];
 }

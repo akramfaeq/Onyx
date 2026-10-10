@@ -16,6 +16,13 @@ export 'v2ray_configs.dart';
 
 enum VpnState { disconnected, connecting, connected, failed }
 
+// ─── منطقية هايدفاي الكاملة ────────────────────────────────────────
+// ① Auto-reconnect: لو الاتصال انقطع نُعيد تلقائياً (max 3 محاولات)
+// ② Fallback chain: Mahsa → Patterniha → WARP → WarpPsiphon
+// ③ Connection timeout: 30 ثانية ثم نجرب الـ fallback
+// ④ Network change detection: لو تغيّر الـ network نُعيد الاتصال
+// ────────────────────────────────────────────────────────────────────
+
 class SingboxProvider extends ChangeNotifier {
 
   // ─── Channels ────────────────────────────────────────────────────
@@ -24,7 +31,7 @@ class SingboxProvider extends ChangeNotifier {
 
   // ─── State ───────────────────────────────────────────────────────
   VpnState     _state        = VpnState.disconnected;
-  VpnMode      _mode         = VpnMode.warp;
+  VpnMode      _mode         = VpnMode.mahsa;
   String       _status       = '';
   String       _downSpeed    = '0 B/s';
   String       _upSpeed      = '0 B/s';
@@ -34,7 +41,7 @@ class SingboxProvider extends ChangeNotifier {
   bool         _blockAds     = true;
   bool         _autoSpeedTest = false;
 
-  // ─── Connected Country (IP lookup after connect) ─────────────────
+  // ─── Connected Country ───────────────────────────────────────────
   String _connectedCountry = '';
   String _connectedFlag    = '';
   String _connectedIp      = '';
@@ -43,17 +50,34 @@ class SingboxProvider extends ChangeNotifier {
   String get connectedFlag    => _connectedFlag;
   String get connectedIp      => _connectedIp;
 
-  // ─── Custom Subscription servers ─────────────────────────────────
+  // ─── Custom Subscription ─────────────────────────────────────────
   List<VpnServer> _servers        = [];
   VpnServer?      _selectedServer;
   bool            _loadingServers = false;
 
-  // لو المستخدم غيّر الـ mode يدوياً → ما نغيره تلقائياً
-  bool _userChangedMode = false;
-
-  // لو الفصل جاء من الـ ad timer → نعيد الاتصال تلقائياً بعد الفصل
+  bool _userChangedMode    = false;
   bool _pendingAdReconnect = false;
 
+  // ─── Hiddify-style: Reconnect & Fallback ─────────────────────────
+  int      _reconnectAttempts  = 0;
+  static const _maxReconnect   = 3;           // هايدفاي: 3 محاولات
+  static const _reconnectDelay = Duration(seconds: 2);
+  bool     _isAutoReconnecting = false;
+
+  // Fallback chain — نفس ترتيب هايدفاي
+  static const _fallbackChain = [
+    VpnMode.mahsa,
+    VpnMode.patterniha,
+    VpnMode.warp,
+    VpnMode.warpPsiphon,
+  ];
+  int _fallbackIndex = 0;
+
+  // Connection timeout — هايدفاي يستخدم 30 ثانية
+  Timer? _connectTimeoutTimer;
+  static const _connectTimeout = Duration(seconds: 30);
+
+  // ─── Getters ─────────────────────────────────────────────────────
   VpnState        get state          => _state;
   VpnMode         get mode           => _mode;
   String          get status         => _status;
@@ -78,15 +102,15 @@ class SingboxProvider extends ChangeNotifier {
   StreamSubscription? _statusSub;
   int _connectionRevision = 0;
 
-  // ─── مفاتيح SharedPreferences ────────────────────────────────────
-  static const _prefCustomUrl     = 'custom_url';
-  static const _prefExcludedApps  = 'excluded_apps';
-  static const _prefBlockAds      = 'block_ads';
-  static const _prefAutoSpeedTest = 'auto_speed_test';
-  static const _prefLastConfig    = 'last_config_v2';
-  static const _prefLastConfigAt  = 'last_config_saved_at';
+  // ─── SharedPreferences keys ──────────────────────────────────────
+  static const _prefCustomUrl      = 'custom_url';
+  static const _prefExcludedApps   = 'excluded_apps';
+  static const _prefBlockAds       = 'block_ads';
+  static const _prefAutoSpeedTest  = 'auto_speed_test';
+  static const _prefLastConfig     = 'last_config_v2';
+  static const _prefLastConfigAt   = 'last_config_saved_at';
   static const _prefLastConfigMode = 'last_config_mode';
-  static const _configMaxAgeHours = 6;
+  static const _configMaxAgeHours  = 6;
 
   SingboxProvider() { _init(); }
 
@@ -113,18 +137,13 @@ class SingboxProvider extends ChangeNotifier {
     WarpService.getKeys();
     MahsaService.backgroundRefresh();
     PatternihaService.backgroundRefresh();
-
-    // ─── جلب سيرفرات Onyx من GitHub ──────────────────────────────
     loadOnyxServers();
 
     notifyListeners();
   }
 
   VpnMode _bestMode() {
-    // دول محجوبة تماماً → Warp+Psiphon أقوى خيار
     if (GeoService.isRestrictedCountry) return VpnMode.warpPsiphon;
-
-    // باقي الدول (بما فيها العراق والدول الجزئية) → Mahsa أسرع
     return VpnMode.mahsa;
   }
 
@@ -134,6 +153,12 @@ class SingboxProvider extends ChangeNotifier {
     debugPrint('native status: $s');
 
     if (s == 'connected') {
+      // ─── اتصل بنجاح → صفّر عداد الـ reconnect ───────────────────
+      _reconnectAttempts  = 0;
+      _fallbackIndex      = 0;
+      _isAutoReconnecting = false;
+      _connectTimeoutTimer?.cancel();
+
       _state       = VpnState.connected;
       _status      = '';
       _connectedAt ??= DateTime.now();
@@ -141,25 +166,15 @@ class SingboxProvider extends ChangeNotifier {
       _startStatsTimer();
       _fetchConnectedCountry();
 
-      // إعلان كل ساعة: فصل → إعلان → إعادة اتصال
       AdsService.startHourlyAdTimer(
         onDisconnect: disconnect,
-        onReconnect: () async {
-          _pendingAdReconnect = true;
-        },
+        onReconnect: () async { _pendingAdReconnect = true; },
       );
 
     } else if (s == 'disconnected') {
-      // ─── الإصلاح: تجاهل "disconnected" لو احنا بالفعل في connecting ────
-      // هذا يصير لما:
-      //   1. المستخدم يضغط وصل → connectWithMode → _stopConnection → Native stop
-      //   2. Native يرسل "disconnected" متأخر
-      //   3. لكن _connect() شتغل بالفعل وغيّر _state لـ connecting
-      // بدون هذا الإصلاح: "disconnected" event يعيّد _state لـ disconnected
-      // ويمسح الـ UI ويوقف كل شيء بينما الاتصال الجديد لسه جاري
       if (_state == VpnState.connecting) {
         debugPrint('_onNativeStatus: ignoring stale "disconnected" — already connecting');
-        return; // لا تغير أي شيء
+        return;
       }
 
       _state            = VpnState.disconnected;
@@ -174,29 +189,88 @@ class SingboxProvider extends ChangeNotifier {
 
       AdsService.stopHourlyAdTimer();
 
-      // إعادة اتصال تلقائية بعد إعلان الـ ad timer
+      // ─── Ad reconnect ─────────────────────────────────────────────
       if (_pendingAdReconnect) {
         _pendingAdReconnect = false;
         Future.delayed(const Duration(milliseconds: 800), () {
-          if (_state == VpnState.disconnected) {
-            connect();
-          }
+          if (_state == VpnState.disconnected) connect();
         });
       }
 
     } else if (s.startsWith('failed')) {
+      _connectTimeoutTimer?.cancel();
       final msg = s.contains(':') ? s.split(':').skip(1).join(':') : 'Connection failed';
-      _setFailed(_friendlyConnectionError(msg.trim()));
-      AdsService.stopHourlyAdTimer();
+      debugPrint('native failed: $msg');
+
+      // ─── هايدفاي Fallback Logic ───────────────────────────────────
+      if (!_userChangedMode && _fallbackIndex < _fallbackChain.length) {
+        _tryFallback(msg.trim());
+      } else if (_reconnectAttempts < _maxReconnect && !_userChangedMode) {
+        _scheduleReconnect(msg.trim());
+      } else {
+        _setFailed(_friendlyConnectionError(msg.trim()));
+        AdsService.stopHourlyAdTimer();
+      }
+      return; // لا تُعلّم حتى نقرر
+
     } else if (s == 'permission_requested') {
       _status = 'Waiting for permission...';
     } else if (s.startsWith('stats:')) {
       _parseStats(s.substring(6));
     }
+
     notifyListeners();
   }
 
-  // ─── Connected Country Lookup ──────────────────────────────────────
+  // ─── ① Fallback Chain (هايدفاي) ──────────────────────────────────
+  // عند الفشل: نجرب المصدر الثاني تلقائياً بدون ما يشوف المستخدم أي شيء
+  void _tryFallback(String reason) {
+    // تخطى الـ mode الحالي في الـ chain
+    while (_fallbackIndex < _fallbackChain.length &&
+           _fallbackChain[_fallbackIndex] == _mode) {
+      _fallbackIndex++;
+    }
+
+    if (_fallbackIndex >= _fallbackChain.length) {
+      // استنفدنا كل الخيارات → أظهر الخطأ
+      _setFailed(_friendlyConnectionError(reason));
+      AdsService.stopHourlyAdTimer();
+      notifyListeners();
+      return;
+    }
+
+    final nextMode = _fallbackChain[_fallbackIndex];
+    _fallbackIndex++;
+
+    debugPrint('SingboxProvider: fallback → $nextMode (was $_mode)');
+    _status = 'Trying another server...';
+    _mode   = nextMode;
+    notifyListeners();
+
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (_state != VpnState.failed && _state != VpnState.disconnected) return;
+      _clearConfigCache().then((_) => _connect(++_connectionRevision));
+    });
+  }
+
+  // ─── ② Auto-Reconnect (هايدفاي) ──────────────────────────────────
+  // نفس ConnectivityController في هايدفاي: يُعيد الاتصال تلقائياً
+  void _scheduleReconnect(String reason) {
+    _reconnectAttempts++;
+    _isAutoReconnecting = true;
+    _status = 'Reconnecting... ($_reconnectAttempts/$_maxReconnect)';
+    notifyListeners();
+
+    debugPrint('SingboxProvider: auto-reconnect #$_reconnectAttempts in ${_reconnectDelay.inSeconds}s');
+
+    Future.delayed(_reconnectDelay * _reconnectAttempts, () {
+      if (!_isAutoReconnecting) return;
+      if (_state == VpnState.connected) return;
+      _connect(++_connectionRevision);
+    });
+  }
+
+  // ─── Connected Country Lookup ─────────────────────────────────────
   Future<void> _fetchConnectedCountry() async {
     const apis = [
       'https://ipapi.co/json/',
@@ -226,12 +300,12 @@ class SingboxProvider extends ChangeNotifier {
 
   static String _codeToFlag(String code) {
     if (code.length != 2) return '🌐';
-    final base = 0x1F1E6 - 0x41;
+    final base  = 0x1F1E6 - 0x41;
     final chars = code.toUpperCase().codeUnits;
     return String.fromCharCode(base + chars[0]) + String.fromCharCode(base + chars[1]);
   }
 
-  // ─── Stats Polling ─────────────────────────────────────────────────
+  // ─── Stats ────────────────────────────────────────────────────────
   void _startStatsTimer() {
     _statsTimer?.cancel();
     _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
@@ -239,10 +313,8 @@ class SingboxProvider extends ChangeNotifier {
       try {
         final result = await _method.invokeMethod('getStats');
         if (result is Map) {
-          final down = result['down'] as int? ?? 0;
-          final up   = result['up']   as int? ?? 0;
-          _downSpeed = _formatSpeed(down);
-          _upSpeed   = _formatSpeed(up);
+          _downSpeed = _formatSpeed(result['down'] as int? ?? 0);
+          _upSpeed   = _formatSpeed(result['up']   as int? ?? 0);
           notifyListeners();
         }
       } catch (_) {}
@@ -260,11 +332,12 @@ class SingboxProvider extends ChangeNotifier {
   }
 
   String _formatSpeed(int bytesPerSec) {
-    if (bytesPerSec < 1024)        return '$bytesPerSec B/s';
-    if (bytesPerSec < 1024 * 1024) return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
+    if (bytesPerSec < 1024)         return '$bytesPerSec B/s';
+    if (bytesPerSec < 1024 * 1024)  return '${(bytesPerSec / 1024).toStringAsFixed(1)} KB/s';
     return '${(bytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
   }
 
+  // ─── Connect ──────────────────────────────────────────────────────
   Future<void> connectWithMode(
     VpnMode mode, {
     VpnServer? onyxServer,
@@ -274,10 +347,15 @@ class SingboxProvider extends ChangeNotifier {
     if (_state != VpnState.disconnected) await _stopConnection();
     if (request != _connectionRevision) return;
 
-    _mode = mode;
-    _userChangedMode = true;
+    // ─── إعادة تعيين الـ fallback عند اختيار يدوي ────────────────
+    _mode               = mode;
+    _userChangedMode    = true;
+    _fallbackIndex      = 0;
+    _reconnectAttempts  = 0;
+    _isAutoReconnecting = false;
+
     if (mode == VpnMode.pythonServers) _selectedOnyxServer = onyxServer;
-    if (mode == VpnMode.custom) _selectedServer = customServer;
+    if (mode == VpnMode.custom)        _selectedServer     = customServer;
 
     await _clearConfigCache();
     if (request != _connectionRevision) return;
@@ -285,22 +363,24 @@ class SingboxProvider extends ChangeNotifier {
     await _connect(request);
   }
 
-  // ─── Connect / Disconnect ─────────────────────────────────────────
   Future<void> connect() async {
     if (_state == VpnState.connecting || _state == VpnState.connected) {
       _pendingAdReconnect = false;
+      _isAutoReconnecting = false;
       await disconnect();
       return;
     }
+    // ─── إعادة تعيين الـ fallback عند ضغطة يدوية ─────────────────
+    _fallbackIndex     = 0;
+    _reconnectAttempts = 0;
     if (_state == VpnState.failed) await _clearConfigCache();
     await _connect(++_connectionRevision);
   }
 
   Future<void> _connect(int request) async {
-    // اختيار تلقائي لأفضل mode حسب البلد — فقط لو المستخدم ما غيّر يدوياً
     if (!_userChangedMode) {
       final auto = _bestMode();
-      if (_mode != auto) {
+      if (_mode != auto && _fallbackIndex == 0) {
         _mode = auto;
         debugPrint('SingboxProvider: auto-selected mode → $auto');
       }
@@ -310,12 +390,20 @@ class SingboxProvider extends ChangeNotifier {
     _status = 'Preparing...';
     notifyListeners();
 
+    // ─── ③ Connection Timeout — هايدفاي 30 ثانية ─────────────────
+    _connectTimeoutTimer?.cancel();
+    _connectTimeoutTimer = Timer(_connectTimeout, () {
+      if (_state == VpnState.connecting) {
+        debugPrint('SingboxProvider: connection timeout → trying fallback');
+        _tryFallback('Connection timeout');
+      }
+    });
+
     try {
       final cc = GeoService.userCountryCode.toLowerCase().isNotEmpty
           ? GeoService.userCountryCode.toLowerCase()
           : 'iq';
 
-      // نفس منهجية هايدفاي: قرأ الكونفيغ من الكاش أولاً
       String? config = await _loadCachedConfig();
 
       if (config != null) {
@@ -328,55 +416,64 @@ class SingboxProvider extends ChangeNotifier {
         notifyListeners();
         config = await _buildConfig(cc);
 
-        if (request != _connectionRevision) return;
+        if (request != _connectionRevision) { _connectTimeoutTimer?.cancel(); return; }
 
         if (config == null || config.isEmpty) {
-          _setFailed('No servers available');
+          _connectTimeoutTimer?.cancel();
+          if (!_userChangedMode && _fallbackIndex < _fallbackChain.length) {
+            _tryFallback('No servers available');
+          } else {
+            _setFailed('No servers available');
+          }
           return;
         }
         await _saveCachedConfig(config);
       }
 
-      if (request != _connectionRevision) return;
+      if (request != _connectionRevision) { _connectTimeoutTimer?.cancel(); return; }
 
       _status = 'Connecting...';
       notifyListeners();
 
-      // ✅ FIX: warpOverProxy فقط لـ warpPsiphon — مو Mahsa
-      // Mahsa هي سيرفرات v2ray عادية ولا تحتاج WARP فوقها
-      final result = await _method.invokeMethod('start', {
-        'config': config,
+      await _method.invokeMethod('start', {
+        'config':        config,
         'warpOverProxy': _mode == VpnMode.warpPsiphon,
       });
-      debugPrint('start result: $result');
+      debugPrint('start result: ok');
 
-      // تجديد صامت في الخلفية بعد الاتصال
       _scheduleBackgroundRefresh(cc);
 
     } on PlatformException catch (e) {
+      _connectTimeoutTimer?.cancel();
       if (request != _connectionRevision) return;
       debugPrint('PlatformException: ${e.code} — ${e.message}');
       if (e.code == 'INVALID_CONFIG') await _clearConfigCache();
-      _setFailed(_friendlyConnectionError(e.message ?? 'Connection failed'));
+
+      if (!_userChangedMode && _fallbackIndex < _fallbackChain.length) {
+        _tryFallback(e.message ?? 'Connection failed');
+      } else {
+        _setFailed(_friendlyConnectionError(e.message ?? 'Connection failed'));
+      }
     } catch (e) {
+      _connectTimeoutTimer?.cancel();
       if (request != _connectionRevision) return;
       debugPrint('connect error: $e');
-      _setFailed('Error: $e');
+      if (!_userChangedMode && _fallbackIndex < _fallbackChain.length) {
+        _tryFallback('$e');
+      } else {
+        _setFailed('Error: $e');
+      }
     }
   }
 
   Future<void> disconnect() async {
+    _connectTimeoutTimer?.cancel();
+    _isAutoReconnecting = false;
     ++_connectionRevision;
     await _stopConnection();
   }
 
   Future<void> _stopConnection() async {
-    // ─── الإصلاح: لا نغير الـ state يدوياً هنا ────────────────────────
-    // الكود القديم كان يضع _state = disconnected فوراً ثم يرسل stop للـ native
-    // المشكلة: لو connectWithMode استدعى _stopConnection ثم _connect
-    //          وصل event "disconnected" من Native متأخر → يمسح الـ connecting state!
-    // الحل: نرسل stop فقط، ونخلي الـ event الحقيقي من Native يغير الـ state
-    // لكن نوقف الـ timers محلياً لأنهم Flutter-side فقط
     _stopTimers();
     _connectedAt = null;
     _duration    = Duration.zero;
@@ -389,11 +486,8 @@ class SingboxProvider extends ChangeNotifier {
       debugPrint('disconnect error: $e');
     }
 
-    // نعطي Native وقت 300ms يكمل الإيقاف قبل أي شيء ثاني
-    // هذا يمنع Mobile.start() من يشتغل وهو Mobile.stop() لسه شغال
     await Future.delayed(const Duration(milliseconds: 300));
 
-    // إذا ما وصل event من Native بعد 300ms → نعيّن الـ state يدوياً كـ fallback
     if (_state != VpnState.disconnected) {
       _state  = VpnState.disconnected;
       _status = '';
@@ -401,33 +495,27 @@ class SingboxProvider extends ChangeNotifier {
     }
   }
 
-  // ─── كاش الكونفيغ (نفس ProfilePathResolver في هايدفاي) ────────────
+  // ─── Config Cache ────────────────────────────────────────────────
   Future<String?> _loadCachedConfig() async {
     try {
-      final prefs   = await SharedPreferences.getInstance();
-      final config  = prefs.getString(_prefLastConfig);
-      final savedAt = prefs.getString(_prefLastConfigAt);
+      final prefs     = await SharedPreferences.getInstance();
+      final config    = prefs.getString(_prefLastConfig);
+      final savedAt   = prefs.getString(_prefLastConfigAt);
       final savedMode = prefs.getString(_prefLastConfigMode);
       if (config == null || savedAt == null || savedMode != _mode.name) return null;
 
       final age = DateTime.now().difference(DateTime.parse(savedAt));
-      if (age.inHours >= _configMaxAgeHours) {
-        debugPrint('SingboxProvider: config cache expired (${age.inHours}h old)');
-        return null;
-      }
+      if (age.inHours >= _configMaxAgeHours) return null;
       return config;
-    } catch (_) {
-      return null;
-    }
+    } catch (_) { return null; }
   }
 
   Future<void> _saveCachedConfig(String config) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefLastConfig, config);
-      await prefs.setString(_prefLastConfigAt, DateTime.now().toIso8601String());
+      await prefs.setString(_prefLastConfig,     config);
+      await prefs.setString(_prefLastConfigAt,   DateTime.now().toIso8601String());
       await prefs.setString(_prefLastConfigMode, _mode.name);
-      debugPrint('SingboxProvider: config saved to cache');
     } catch (_) {}
   }
 
@@ -438,11 +526,10 @@ class SingboxProvider extends ChangeNotifier {
     await prefs.remove(_prefLastConfigMode);
   }
 
-  // ─── تجديد صامت (نفس profiles_update_notifier في هايدفاي) ─────────
+  // ─── Background Refresh ──────────────────────────────────────────
   void _scheduleBackgroundRefresh(String cc) {
     Future.delayed(const Duration(seconds: 3), () async {
       if (!isConnected) return;
-      debugPrint('SingboxProvider: background refresh starting...');
       try {
         final newConfig = await _buildConfig(cc);
         if (newConfig != null && newConfig.isNotEmpty) {
@@ -455,43 +542,56 @@ class SingboxProvider extends ChangeNotifier {
     });
   }
 
-  // ─── Build Config ───────────────────────────────────────────────────
+  // ─── Build Config ────────────────────────────────────────────────
   Future<String?> _buildConfig(String cc) async {
     switch (_mode) {
       case VpnMode.warp:
         _status = 'Fetching Warp keys...';
         notifyListeners();
         return await V2RayConfigs.warp(
-          countryCode: cc,
+          countryCode:  cc,
           excludedApps: _excludedApps,
-          blockAds: _blockAds,
+          blockAds:     _blockAds,
         );
 
       case VpnMode.psiphon:
         _status = 'Building Psiphon config...';
         notifyListeners();
         return await V2RayConfigs.psiphon(
-          countryCode: cc,
+          countryCode:  cc,
           excludedApps: _excludedApps,
-          blockAds: _blockAds,
+          blockAds:     _blockAds,
         );
 
       case VpnMode.warpPsiphon:
         _status = 'Fetching Warp keys...';
         notifyListeners();
         return await V2RayConfigs.warpViaPsiphon(
-          countryCode: cc,
+          countryCode:  cc,
           excludedApps: _excludedApps,
-          blockAds: _blockAds,
+          blockAds:     _blockAds,
         );
 
       case VpnMode.mahsa:
         _status = 'Finding the fastest Mahsa server...';
         notifyListeners();
         return await V2RayConfigs.mahsa(
-          countryCode: cc,
+          countryCode:  cc,
           excludedApps: _excludedApps,
-          blockAds: _blockAds,
+          blockAds:     _blockAds,
+        );
+
+      // ─── Patterniha — مصدر جديد في الـ fallback chain ────────────
+      case VpnMode.patterniha:
+        _status = 'Finding the fastest Patterniha server...';
+        notifyListeners();
+        final servers = await PatternihaService.getServers();
+        if (servers.isEmpty) return null;
+        return await V2RayConfigs.buildFromServerList(
+          servers:      servers,
+          countryCode:  cc,
+          excludedApps: _excludedApps,
+          blockAds:     _blockAds,
         );
 
       case VpnMode.pythonServers:
@@ -501,22 +601,20 @@ class SingboxProvider extends ChangeNotifier {
           await loadOnyxServers(forceRefresh: true);
         }
         if (_onyxServers.isEmpty) return null;
-        final selected = _selectedOnyxServer;
+        final selected  = _selectedOnyxServer;
         final allRanked = _rankedOnyxServers();
-        final servers = selected == null
+        final servers   = selected == null
             ? allRanked
-            : allRanked
-                .where((server) => server.country == selected.country)
-                .toList();
+            : allRanked.where((s) => s.country == selected.country).toList();
         _status = selected == null
             ? 'Selecting the fastest Python server...'
             : 'Connecting to ${selected.country.isNotEmpty ? selected.country : selected.name}...';
         notifyListeners();
         return await V2RayConfigs.buildFromServerList(
-          servers: servers,
-          countryCode: cc,
+          servers:      servers,
+          countryCode:  cc,
           excludedApps: _excludedApps,
-          blockAds: _blockAds,
+          blockAds:     _blockAds,
         );
 
       case VpnMode.custom:
@@ -543,27 +641,26 @@ class SingboxProvider extends ChangeNotifier {
     }
   }
 
-  // ─── OnyxServers — السيرفرات المدمجة من GitHub ─────────────────────
-  List<VpnServer> _onyxServers      = [];
-  VpnServer? _selectedOnyxServer;
-  bool            _loadingOnyx      = false;
-  List<VpnServer> get onyxServers   => _onyxServers;
-  VpnServer? get selectedOnyxServer => _selectedOnyxServer;
-  bool            get loadingOnyx   => _loadingOnyx;
+  // ─── OnyxServers ────────────────────────────────────────────────
+  List<VpnServer> _onyxServers       = [];
+  VpnServer?      _selectedOnyxServer;
+  bool            _loadingOnyx       = false;
+  List<VpnServer> get onyxServers    => _onyxServers;
+  VpnServer?  get selectedOnyxServer => _selectedOnyxServer;
+  bool            get loadingOnyx    => _loadingOnyx;
 
-  List<VpnServer> _rankedOnyxServers() {
-    return List<VpnServer>.unmodifiable(_onyxServers);
-  }
+  List<VpnServer> _rankedOnyxServers() =>
+      List<VpnServer>.unmodifiable(_onyxServers);
 
   Future<void> loadOnyxServers({bool forceRefresh = false}) async {
     _loadingOnyx = true;
     notifyListeners();
     try {
       _onyxServers = await PatternihaService.getServers(forceRefresh: forceRefresh);
-      if (_selectedOnyxServer != null && !(_onyxServers.any((server) => server.link == _selectedOnyxServer!.link))) {
+      if (_selectedOnyxServer != null &&
+          !_onyxServers.any((s) => s.link == _selectedOnyxServer!.link)) {
         _selectedOnyxServer = null;
       }
-      debugPrint('SingboxProvider: loaded ${_onyxServers.length} Onyx servers');
     } catch (e) {
       debugPrint('SingboxProvider: OnyxServers error — $e');
     }
@@ -581,6 +678,8 @@ class SingboxProvider extends ChangeNotifier {
     if (_state != VpnState.disconnected) return;
     _mode             = m;
     _userChangedMode  = true;
+    _fallbackIndex    = 0;
+    _reconnectAttempts = 0;
     _clearConfigCache();
     notifyListeners();
   }
@@ -597,17 +696,16 @@ class SingboxProvider extends ChangeNotifier {
     await connectWithMode(VpnMode.custom);
   }
 
-  /// جلب قائمة السيرفرات من الـ subscription — نفس هايدفاي
   Future<void> fetchServers() async {
     if (_customUrl == null || _customUrl!.isEmpty) return;
     _loadingServers = true;
     notifyListeners();
     try {
-      final list = await V2RayConfigs.parseSubscription(_customUrl!);
-      _servers        = list;
-      if (_selectedServer != null) {
-        final stillExists = list.any((s) => s.name == _selectedServer!.name);
-        if (!stillExists) _selectedServer = null;
+      final list  = await V2RayConfigs.parseSubscription(_customUrl!);
+      _servers    = list;
+      if (_selectedServer != null &&
+          !list.any((s) => s.name == _selectedServer!.name)) {
+        _selectedServer = null;
       }
     } catch (_) {
       _servers = [];
@@ -674,7 +772,7 @@ class SingboxProvider extends ChangeNotifier {
     await _clearConfigCache();
   }
 
-  // ─── Timers ──────────────────────────────────────────────────────────
+  // ─── Timers ──────────────────────────────────────────────────────
   void _startTimer() {
     _durationTimer?.cancel();
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -704,6 +802,12 @@ class SingboxProvider extends ChangeNotifier {
     if (message.toLowerCase().contains('unknown outbound type: psiphon')) {
       return 'The bundled core rejected Psiphon (unknown outbound type).';
     }
+    if (message.toLowerCase().contains('timeout')) {
+      return 'Connection timed out. Please try again.';
+    }
+    if (message.toLowerCase().contains('no servers')) {
+      return 'No servers available. Check your internet connection.';
+    }
     return message;
   }
 
@@ -717,6 +821,7 @@ class SingboxProvider extends ChangeNotifier {
   @override
   void dispose() {
     _statusSub?.cancel();
+    _connectTimeoutTimer?.cancel();
     _stopTimers();
     super.dispose();
   }
