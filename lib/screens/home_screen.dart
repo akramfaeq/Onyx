@@ -449,59 +449,86 @@ class _PythonServersCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final choices = _countryChoices(vpn.onyxServers);
-    final active = vpn.mode == VpnMode.pythonServers;
+    final active  = vpn.mode == VpnMode.pythonServers;
 
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.selectionClick();
-        if (vpn.isConnected && vpn.mode == VpnMode.pythonServers) {
-          vpn.disconnect();
-        } else {
-          vpn.connectWithMode(VpnMode.pythonServers);
-        }
-      },
-      child: Container(
+    return Container(
       decoration: BoxDecoration(
         color: active ? const Color(0xFF111827) : const Color(0xFF10111A),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: active ? const Color(0xFF38BDF8).withValues(alpha: 0.48) : const Color(0xFF20212D)),
+        border: Border.all(
+          color: active
+              ? const Color(0xFF38BDF8).withValues(alpha: 0.48)
+              : const Color(0xFF20212D),
+        ),
       ),
       child: Theme(
         data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
         child: ExpansionTile(
           tilePadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 3),
           childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+          // ─── حذف السهم الافتراضي ───────────────────────────────
+          trailing: const SizedBox.shrink(),
           leading: Container(
             width: 42,
             height: 42,
-            decoration: BoxDecoration(color: const Color(0xFF38BDF8).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(13)),
+            decoration: BoxDecoration(
+              color: const Color(0xFF38BDF8).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(13),
+            ),
             child: const Icon(Icons.public_rounded, color: Color(0xFF38BDF8), size: 21),
           ),
-          title: const Text('ONYX SERVERS', style: TextStyle(color: Color(0xFFF3F4F6), fontSize: 13, fontWeight: FontWeight.w800, letterSpacing: 0.35)),
+          title: const Text(
+            'PATTERNIHA',
+            style: TextStyle(
+              color: Color(0xFFF3F4F6),
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.35,
+            ),
+          ),
           subtitle: Text(
-            vpn.loadingOnyx ? 'Loading updated servers…' : 'Fast servers · tap to choose a country',
+            vpn.loadingOnyx
+                ? 'Loading servers…'
+                : 'Community servers · tap to choose',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(color: Color(0xFF777B89), fontSize: 11),
           ),
-          iconColor: const Color(0xFF38BDF8),
-          collapsedIconColor: const Color(0xFF555967),
           onExpansionChanged: (expanded) {
-            if (expanded && vpn.onyxServers.isEmpty && !vpn.loadingOnyx) vpn.loadOnyxServers(forceRefresh: true);
+            if (expanded && vpn.onyxServers.isEmpty && !vpn.loadingOnyx) {
+              vpn.loadOnyxServers(forceRefresh: true);
+            }
           },
           children: [
             if (vpn.loadingOnyx && choices.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
-                child: Center(child: CircularProgressIndicator(color: Color(0xFF38BDF8), strokeWidth: 2)),
+                child: Center(
+                  child: CircularProgressIndicator(
+                    color: Color(0xFF38BDF8),
+                    strokeWidth: 2,
+                  ),
+                ),
               )
             else if (choices.isEmpty)
-              ListTile(
-                dense: true,
-                title: const Text('Servers unavailable', style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 12)),
-                trailing: IconButton(
-                  onPressed: () => vpn.loadOnyxServers(forceRefresh: true),
-                  icon: const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8), size: 18),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                child: Row(
+                  children: [
+                    const Text(
+                      'Servers unavailable',
+                      style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 12),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () => vpn.loadOnyxServers(forceRefresh: true),
+                      child: const Icon(
+                        Icons.refresh_rounded,
+                        color: Color(0xFF38BDF8),
+                        size: 18,
+                      ),
+                    ),
+                  ],
                 ),
               )
             else
@@ -527,10 +554,19 @@ class _PythonServersCard extends StatelessWidget {
                               choice.country,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(color: selected ? Colors.white : const Color(0xFFB9BBC5), fontSize: 12, fontWeight: selected ? FontWeight.w700 : FontWeight.w500),
+                              style: TextStyle(
+                                color: selected ? Colors.white : const Color(0xFFB9BBC5),
+                                fontSize: 12,
+                                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                              ),
                             ),
                           ),
-                          if (selected) const Icon(Icons.check_rounded, color: Color(0xFF38BDF8), size: 17),
+                          if (selected)
+                            const Icon(
+                              Icons.check_rounded,
+                              color: Color(0xFF38BDF8),
+                              size: 17,
+                            ),
                         ],
                       ),
                     ),
@@ -540,8 +576,7 @@ class _PythonServersCard extends StatelessWidget {
           ],
         ),
       ),
-    ), // Container
-    ); // GestureDetector
+    );
   }
 }
 

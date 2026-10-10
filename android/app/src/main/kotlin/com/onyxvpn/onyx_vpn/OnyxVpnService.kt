@@ -83,7 +83,11 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         interfaceCallbacks.keys.toList().forEach { closeDefaultInterfaceMonitor(it) }
         instance = null
         scope.cancel()
+        // ─── الإصلاح: closeAll() عند إغلاق التطبيق كلياً فقط ───────────
+        // stopVpn() العادي يستدعي Mobile.stop() فقط بدون close()
+        // هنا نستدعي closeAll() لأن الـ Service يُدمَّر نهائياً
         runBlocking { stopVpn() }
+        OnyxCore.closeAll()
         super.onDestroy()
     }
 
@@ -132,15 +136,24 @@ class OnyxVpnService : VpnService(), PlatformInterface {
 
     private suspend fun stopVpn() = withContext(Dispatchers.IO) {
         vpnOperationMutex.withLock {
+        // ─── الإصلاح: أوقف كل شيء أولاً، ثم أرسل "disconnected" ─────────
+        // الترتيب القديم كان: stopCore → sendStatus("disconnected")
+        // المشكلة: Flutter يستقبل "disconnected" وقد يبدأ reconnect فوراً
+        //          بينما stopCore() لسه ما انتهى → تعارض في Mobile engine
         try { OnyxCore.stopCore() }
         catch (e: Exception) { Log.w(TAG, "stop error: " + e.message) }
 
-        tunFd?.close(); tunFd = null
+        tunFd?.close()
+        tunFd    = null
         isRunning = false
         starting.set(false)
 
         (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_ID)
         stopForeground(STOP_FOREGROUND_REMOVE)
+
+        // ─── أرسل "disconnected" بعد إغلاق كل شيء ───────────────────────
+        // تأخير 150ms يضمن أن Mobile.stop() اكتمل قبل أي reconnect من Flutter
+        delay(150)
         OnyxChannel.sendStatus("disconnected")
         Log.d(TAG, "VPN stopped")
         }

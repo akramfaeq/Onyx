@@ -150,6 +150,18 @@ class SingboxProvider extends ChangeNotifier {
       );
 
     } else if (s == 'disconnected') {
+      // ─── الإصلاح: تجاهل "disconnected" لو احنا بالفعل في connecting ────
+      // هذا يصير لما:
+      //   1. المستخدم يضغط وصل → connectWithMode → _stopConnection → Native stop
+      //   2. Native يرسل "disconnected" متأخر
+      //   3. لكن _connect() شتغل بالفعل وغيّر _state لـ connecting
+      // بدون هذا الإصلاح: "disconnected" event يعيّد _state لـ disconnected
+      // ويمسح الـ UI ويوقف كل شيء بينما الاتصال الجديد لسه جاري
+      if (_state == VpnState.connecting) {
+        debugPrint('_onNativeStatus: ignoring stale "disconnected" — already connecting');
+        return; // لا تغير أي شيء
+      }
+
       _state            = VpnState.disconnected;
       _status           = '';
       _stopTimers();
@@ -359,19 +371,34 @@ class SingboxProvider extends ChangeNotifier {
   }
 
   Future<void> _stopConnection() async {
+    // ─── الإصلاح: لا نغير الـ state يدوياً هنا ────────────────────────
+    // الكود القديم كان يضع _state = disconnected فوراً ثم يرسل stop للـ native
+    // المشكلة: لو connectWithMode استدعى _stopConnection ثم _connect
+    //          وصل event "disconnected" من Native متأخر → يمسح الـ connecting state!
+    // الحل: نرسل stop فقط، ونخلي الـ event الحقيقي من Native يغير الـ state
+    // لكن نوقف الـ timers محلياً لأنهم Flutter-side فقط
+    _stopTimers();
+    _connectedAt = null;
+    _duration    = Duration.zero;
+    _downSpeed   = '0 B/s';
+    _upSpeed     = '0 B/s';
+
     try {
       await _method.invokeMethod('stop');
     } catch (e) {
       debugPrint('disconnect error: $e');
     }
-    _stopTimers();
-    _connectedAt = null;
-    _state     = VpnState.disconnected;
-    _status    = '';
-    _duration  = Duration.zero;
-    _downSpeed = '0 B/s';
-    _upSpeed   = '0 B/s';
-    notifyListeners();
+
+    // نعطي Native وقت 300ms يكمل الإيقاف قبل أي شيء ثاني
+    // هذا يمنع Mobile.start() من يشتغل وهو Mobile.stop() لسه شغال
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    // إذا ما وصل event من Native بعد 300ms → نعيّن الـ state يدوياً كـ fallback
+    if (_state != VpnState.disconnected) {
+      _state  = VpnState.disconnected;
+      _status = '';
+      notifyListeners();
+    }
   }
 
   // ─── كاش الكونفيغ (نفس ProfilePathResolver في هايدفاي) ────────────
