@@ -11,6 +11,11 @@ import 'package:http/http.dart' as http;
 
 import 'app_database.dart';   // ← Drift DB بدل path_provider + dart:io
 
+// ignore: avoid_void_async
+void _unawaited(Future<void> future) {
+  future.ignore();
+}
+
 class MahsaService {
   // ─── إعدادات ────────────────────────────────────────────────
   static const _cacheHours    = 24;   // نفس Hiddify (#profile-update-interval: 24)
@@ -101,7 +106,7 @@ class MahsaService {
       debugPrint('MahsaService: backgroundRefresh — DB read error, fetching');
     }
 
-    unawaited(_fetchAndSave());
+    _unawaited(_fetchAndSave());
   }
 
   static Future<void> clearCache() async {
@@ -270,9 +275,4 @@ class MahsaService {
     } catch (_) {}
     return null;
   }
-}
-
-// ignore: avoid_void_async
-void unawaited(Future<void> future) {
-  future.ignore();
 }

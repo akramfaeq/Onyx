@@ -84,7 +84,7 @@ class V2RayConfigs {
       'inet6_address':  'fdfe:dcba:9876::1/126',
       'mtu':            9000,
       'auto_route':     true,
-      'strict_route':   true,   // ✅ مهم: يضمن كل الترافيك يمر عبر الـ tunnel
+      'strict_route':   true,
       'sniff':          true,
       'sniff_override_destination': false,
       if (excluded.isNotEmpty) 'exclude_package': excluded,
@@ -139,7 +139,7 @@ class V2RayConfigs {
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
       {'protocol': 'dns',   'outbound': 'dns-out'},
-      {'port':     53,      'outbound': 'dns-out'},          // ✅ يحول كل DNS port 53
+      {'port':     53,      'outbound': 'dns-out'},
       {'ip_is_private': true, 'outbound': 'direct'},
       if (blockAds) ...[
         {'rule_set': ['geosite-malware'],  'outbound': 'block'},
@@ -697,14 +697,14 @@ class V2RayConfigs {
           'interval':                    '10m',
           'tolerance':                   1,
           'idle_timeout':                '30m',
-          'interrupt_exist_connections': true,   // ✅ يبدل فوري لو لاقى أسرع
+          'interrupt_exist_connections': true,
         },
         {
           'type':      'urltest',
           'tag':       'proxy-fallback',
           'outbounds': tags,
           'url':       'http://www.gstatic.com/generate_204',
-          'interval':  '30s',   // ✅ فحص سريع لو الكل فاشل
+          'interval':  '30s',
           'tolerance': 500,
           'idle_timeout': '5m',
           'interrupt_exist_connections': true,
@@ -802,21 +802,9 @@ class V2RayConfigs {
         };
       }
 
+      // ✅ FIX: ss:// يدعم الصيغتين: base64 القديمة و SIP002 الجديدة
       if (uri.scheme == 'ss') {
-        final userInfo = uri.userInfo;
-        final decoded  = utf8.decode(base64.decode(
-            userInfo + '=' * ((4 - userInfo.length % 4) % 4)));
-        final idx = decoded.indexOf(':');
-        if (idx > 0) {
-          return {
-            'type':        'shadowsocks',
-            'tag':         tag,
-            'server':      uri.host,
-            'server_port': uri.port,
-            'method':      decoded.substring(0, idx),
-            'password':    decoded.substring(idx + 1),
-          };
-        }
+        return _parseShadowsocks(uri, tag);
       }
 
       if (uri.scheme == 'hysteria2' || uri.scheme == 'hy2') {
@@ -902,6 +890,50 @@ class V2RayConfigs {
           if (credentials.isNotEmpty) 'username': credentials.first,
           if (credentials.length > 1) 'password': credentials.skip(1).join(':'),
         };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ✅ FIX: parser لـ ss:// يدعم SIP002 (method:pass@host:port) + base64 القديمة
+  static Map<String, dynamic>? _parseShadowsocks(Uri uri, String tag) {
+    try {
+      // SIP002: ss://method:password@host:port
+      // userInfo يكون مباشرة method:password (مو base64)
+      if (uri.host.isNotEmpty && uri.port > 0) {
+        final userInfo = Uri.decodeComponent(uri.userInfo);
+        // لو فيه @ في الـ userInfo → base64 قديمة
+        // لو ما فيه → SIP002 مباشرة
+        if (!userInfo.contains('@')) {
+          // حاول فك base64 أول
+          try {
+            final padded  = userInfo + '=' * ((4 - userInfo.length % 4) % 4);
+            final decoded = utf8.decode(base64.decode(padded));
+            final idx = decoded.indexOf(':');
+            if (idx > 0) {
+              return {
+                'type':        'shadowsocks',
+                'tag':         tag,
+                'server':      uri.host,
+                'server_port': uri.port,
+                'method':      decoded.substring(0, idx),
+                'password':    decoded.substring(idx + 1),
+              };
+            }
+          } catch (_) {}
+          // فشل base64 → SIP002 مباشرة
+          final idx = userInfo.indexOf(':');
+          if (idx > 0) {
+            return {
+              'type':        'shadowsocks',
+              'tag':         tag,
+              'server':      uri.host,
+              'server_port': uri.port,
+              'method':      userInfo.substring(0, idx),
+              'password':    userInfo.substring(idx + 1),
+            };
+          }
+        }
       }
     } catch (_) {}
     return null;

@@ -11,6 +11,12 @@ import 'package:http/http.dart' as http;
 import 'app_database.dart';   // ← Drift DB
 import 'v2ray_configs.dart';
 
+// NOTE: _unawaited معرّفة هنا فقط — لا تعيد تعريفها في ملفات أخرى
+// ignore: avoid_void_async
+void _unawaited(Future<void> future) {
+  future.ignore();
+}
+
 class PatternihaService {
   // ─── إعدادات ────────────────────────────────────────────────
   static const _cacheHours    = 24;  // Patterniha أبطأ تغييراً → 24 ساعة
@@ -70,7 +76,7 @@ class PatternihaService {
       debugPrint('PatternihaService: backgroundRefresh — DB error, fetching');
     }
 
-    unawaited(
+    _unawaited(
       getServers(forceRefresh: true)
           .then<void>((_) {})
           .catchError((Object e) {
@@ -175,7 +181,7 @@ class PatternihaService {
     }
   }
 
-  // ─── Parser (لم يتغير) ───────────────────────────────────────
+  // ─── Parser ───────────────────────────────────────────────────
 
   static List<VpnServer> _parseConfigsTxt(String body) {
     final servers = <VpnServer>[];
@@ -264,9 +270,4 @@ class PatternihaService {
       return 'Unknown';
     }
   }
-}
-
-// ignore: avoid_void_async
-void unawaited(Future<void> future) {
-  future.ignore();
 }

@@ -18,11 +18,11 @@ enum VpnState { disconnected, connecting, connected, failed }
 
 class SingboxProvider extends ChangeNotifier {
 
-  // â”€â”€â”€ Channels â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Channels ────────────────────────────────────────────────────
   static const _method = MethodChannel('com.onyxvpn/vpn');
   static const _events = EventChannel('com.onyxvpn/status');
 
-  // â”€â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── State ───────────────────────────────────────────────────────
   VpnState     _state        = VpnState.disconnected;
   VpnMode      _mode         = VpnMode.warp;
   String       _status       = '';
@@ -34,7 +34,7 @@ class SingboxProvider extends ChangeNotifier {
   bool         _blockAds     = true;
   bool         _autoSpeedTest = false;
 
-  // â”€â”€â”€ Connected Country (IP lookup after connect) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Connected Country (IP lookup after connect) ─────────────────
   String _connectedCountry = '';
   String _connectedFlag    = '';
   String _connectedIp      = '';
@@ -43,15 +43,15 @@ class SingboxProvider extends ChangeNotifier {
   String get connectedFlag    => _connectedFlag;
   String get connectedIp      => _connectedIp;
 
-  // â”€â”€â”€ Custom Subscription servers (Ù†ÙØ³ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Custom Subscription servers ─────────────────────────────────
   List<VpnServer> _servers        = [];
   VpnServer?      _selectedServer;
   bool            _loadingServers = false;
 
-  // Ù„Ùˆ Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… ØºÙŠÙ‘Ø± Ø§Ù„Ù€ mode ÙŠØ¯ÙˆÙŠØ§Ù‹ â†’ Ù…Ø§ Ù†ØºÙŠØ±Ù‡ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹
+  // لو المستخدم غيّر الـ mode يدوياً → ما نغيره تلقائياً
   bool _userChangedMode = false;
 
-  // Ù„Ùˆ Ø§Ù„ÙØµÙ„ Ø¬Ø§Ø¡ Ù…Ù† Ø§Ù„Ù€ ad timer â†’ Ù†Ø¹ÙŠØ¯ Ø§Ù„Ø§ØªØµØ§Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ Ø¨Ø¹Ø¯ Ø§Ù„ÙØµÙ„
+  // لو الفصل جاء من الـ ad timer → نعيد الاتصال تلقائياً بعد الفصل
   bool _pendingAdReconnect = false;
 
   VpnState        get state          => _state;
@@ -78,16 +78,15 @@ class SingboxProvider extends ChangeNotifier {
   StreamSubscription? _statusSub;
   int _connectionRevision = 0;
 
-  // â”€â”€â”€ Ù…ÙØ§ØªÙŠØ­ SharedPreferences â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── مفاتيح SharedPreferences ────────────────────────────────────
   static const _prefCustomUrl     = 'custom_url';
   static const _prefExcludedApps  = 'excluded_apps';
   static const _prefBlockAds      = 'block_ads';
   static const _prefAutoSpeedTest = 'auto_speed_test';
-  // Ø§Ù„ÙƒÙˆÙ†ÙÙŠØº Ø§Ù„ÙƒØ§Ù…Ù„ + ÙˆÙ‚Øª Ø­ÙØ¸Ù‡ (Ù†ÙØ³ Ù…Ù†Ù‡Ø¬ÙŠØ© Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ)
   static const _prefLastConfig    = 'last_config_v2';
   static const _prefLastConfigAt  = 'last_config_saved_at';
   static const _prefLastConfigMode = 'last_config_mode';
-  static const _configMaxAgeHours = 6; // Ù†ÙØ³ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ
+  static const _configMaxAgeHours = 6;
 
   SingboxProvider() { _init(); }
 
@@ -110,27 +109,26 @@ class SingboxProvider extends ChangeNotifier {
     await GeoService.load();
     _mode = _bestMode();
 
-    // â”€â”€â”€ ØªÙ‡ÙŠØ¦Ø© Ø§Ù„Ø¥Ø´Ø¹Ø§Ø±Ø§Øª â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-    // â”€â”€â”€ ØªØ­Ù…ÙŠÙ„ ØµØ§Ù…Øª ÙÙŠ Ø§Ù„Ø®Ù„ÙÙŠØ© â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── تحميل صامت في الخلفية ───────────────────────────────────
     WarpService.getKeys();
     MahsaService.backgroundRefresh();
-    PatternihaService.backgroundRefresh(); // تجديد صامت في الخلفية (24 ساعة)
+    PatternihaService.backgroundRefresh();
 
-    // â”€â”€â”€ Ø¬Ù„Ø¨ Ø³ÙŠØ±ÙØ±Ø§Øª Onyx Ù…Ù† GitHub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─── جلب سيرفرات Onyx من GitHub ──────────────────────────────
     loadOnyxServers();
 
     notifyListeners();
   }
 
   VpnMode _bestMode() {
-    // Ø¯ÙˆÙ„ Ù…Ø­Ø¬ÙˆØ¨Ø© ØªÙ…Ø§Ù…Ø§Ù‹ â†’ Warp+Psiphon Ø£Ù‚ÙˆÙ‰ Ø®ÙŠØ§Ø±
+    // دول محجوبة تماماً → Warp+Psiphon أقوى خيار
     if (GeoService.isRestrictedCountry) return VpnMode.warpPsiphon;
 
-    // Ø¨Ø§Ù‚ÙŠ Ø§Ù„Ø¯ÙˆÙ„ (Ø¨Ù…Ø§ ÙÙŠÙ‡Ø§ Ø§Ù„Ø¹Ø±Ø§Ù‚ ÙˆØ§Ù„Ø¯ÙˆÙ„ Ø§Ù„Ø¬Ø²Ø¦ÙŠØ©) â†’ Mahsa Ø£Ø³Ø±Ø¹
+    // باقي الدول (بما فيها العراق والدول الجزئية) → Mahsa أسرع
     return VpnMode.mahsa;
   }
-  // â”€â”€â”€ Native Status Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  // ─── Native Status Handler ────────────────────────────────────────
   void _onNativeStatus(dynamic event) {
     final s = event.toString();
     debugPrint('native status: $s');
@@ -143,19 +141,13 @@ class SingboxProvider extends ChangeNotifier {
       _startStatsTimer();
       _fetchConnectedCountry();
 
-      // â”€â”€â”€ Ø¥Ø´Ø¹Ø§Ø±: Ù…ØªØµÙ„ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-      // â”€â”€â”€ Ø¥Ø¹Ù„Ø§Ù† ÙƒÙ„ Ø³Ø§Ø¹Ø©: ÙØµÙ„ â†’ Ø¥Ø¹Ù„Ø§Ù† â†’ Ø¥Ø¹Ø§Ø¯Ø© Ø§ØªØµØ§Ù„ â”€â”€â”€â”€â”€
+      // إعلان كل ساعة: فصل → إعلان → إعادة اتصال
       AdsService.startHourlyAdTimer(
         onDisconnect: disconnect,
         onReconnect: () async {
-          // Ù†Ø­Ø· Ø§Ù„ÙÙ„Ø§Ù‚ ÙˆÙ†Ø³ØªÙ†Ù‰ Ø§Ù„Ù€ disconnected event ÙŠØ¬ÙŠ Ù…Ù† Ø§Ù„Ù€ native
-          // Ø¨Ø¹Ø¯ÙŠÙ† _onNativeStatus ÙŠØªØµÙ„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹
           _pendingAdReconnect = true;
         },
       );
-
-      // â”€â”€â”€ Ø¥Ø¹Ù„Ø§Ù† Ø¨Ø¹Ø¯ Ø§Ù„Ø§ØªØµØ§Ù„ Ø§Ù„Ù†Ø§Ø¬Ø­ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     } else if (s == 'disconnected') {
       _state            = VpnState.disconnected;
@@ -168,13 +160,11 @@ class SingboxProvider extends ChangeNotifier {
       _connectedFlag    = '';
       _connectedIp      = '';
 
-      // â”€â”€â”€ Ø¥Ø´Ø¹Ø§Ø±: Ø§Ù†Ù‚Ø·Ø¹ + Ø¥ÙŠÙ‚Ø§Ù timer Ø§Ù„Ø¥Ø¹Ù„Ø§Ù†Ø§Øª â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       AdsService.stopHourlyAdTimer();
 
-      // â”€â”€â”€ Ø¥Ø¹Ø§Ø¯Ø© Ø§ØªØµØ§Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ© Ø¨Ø¹Ø¯ Ø¥Ø¹Ù„Ø§Ù† Ø§Ù„Ù€ ad timer â”€â”€â”€â”€
+      // إعادة اتصال تلقائية بعد إعلان الـ ad timer
       if (_pendingAdReconnect) {
         _pendingAdReconnect = false;
-        // Ù†Ø³ØªÙ†Ù‰ Ø´ÙˆÙŠØ© Ø¨Ø¹Ø¯ Ø§Ù„ÙØµÙ„ Ø§Ù„ÙƒØ§Ù…Ù„ Ù‚Ø¨Ù„ Ø§Ù„Ø§ØªØµØ§Ù„
         Future.delayed(const Duration(milliseconds: 800), () {
           if (_state == VpnState.disconnected) {
             connect();
@@ -194,7 +184,7 @@ class SingboxProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // â”€â”€â”€ Connected Country Lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Connected Country Lookup ──────────────────────────────────────
   Future<void> _fetchConnectedCountry() async {
     const apis = [
       'https://ipapi.co/json/',
@@ -223,13 +213,13 @@ class SingboxProvider extends ChangeNotifier {
   }
 
   static String _codeToFlag(String code) {
-    if (code.length != 2) return 'ðŸŒ';
+    if (code.length != 2) return '🌐';
     final base = 0x1F1E6 - 0x41;
     final chars = code.toUpperCase().codeUnits;
     return String.fromCharCode(base + chars[0]) + String.fromCharCode(base + chars[1]);
   }
 
-  // â”€â”€â”€ Stats Polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Stats Polling ─────────────────────────────────────────────────
   void _startStatsTimer() {
     _statsTimer?.cancel();
     _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
@@ -282,27 +272,25 @@ class SingboxProvider extends ChangeNotifier {
     notifyListeners();
     await _connect(request);
   }
-  // â”€â”€â”€ Connect / Disconnect â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+  // ─── Connect / Disconnect ─────────────────────────────────────────
   Future<void> connect() async {
     if (_state == VpnState.connecting || _state == VpnState.connected) {
-      // Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… Ø¶ØºØ· ÙˆÙ‡Ùˆ Ù…ØªØµÙ„ â†’ ÙØµÙ„ + Ø§ØªØµØ§Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠ
-      _pendingAdReconnect = false; // Ø¥Ù„ØºØ§Ø¡ Ø£ÙŠ reconnect Ù‚Ø§Ø¯Ù… Ù…Ù† Ø§Ù„Ù€ ad timer
+      _pendingAdReconnect = false;
       await disconnect();
       return;
     }
-    // Ù„Ùˆ ÙØ´Ù„ Ø³Ø§Ø¨Ù‚Ø§Ù‹ â†’ Ø§Ù…Ø³Ø­ Ø§Ù„ÙƒØ§Ø´ ÙˆØ­Ø§ÙˆÙ„ Ù…Ø¬Ø¯Ø¯Ø§Ù‹
     if (_state == VpnState.failed) await _clearConfigCache();
     await _connect(++_connectionRevision);
   }
 
   Future<void> _connect(int request) async {
-    // â”€â”€â”€ Ø§Ø®ØªÙŠØ§Ø± ØªÙ„Ù‚Ø§Ø¦ÙŠ Ù„Ø£ÙØ¶Ù„ mode Ø­Ø³Ø¨ Ø§Ù„Ø¨Ù„Ø¯ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    // ÙÙ‚Ø· Ù„Ùˆ Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… Ù…Ø§ ØºÙŠÙ‘Ø± Ø§Ù„Ù€ mode ÙŠØ¯ÙˆÙŠØ§Ù‹
+    // اختيار تلقائي لأفضل mode حسب البلد — فقط لو المستخدم ما غيّر يدوياً
     if (!_userChangedMode) {
       final auto = _bestMode();
       if (_mode != auto) {
         _mode = auto;
-        debugPrint('SingboxProvider: auto-selected mode â†’ $auto');
+        debugPrint('SingboxProvider: auto-selected mode → $auto');
       }
     }
 
@@ -315,16 +303,14 @@ class SingboxProvider extends ChangeNotifier {
           ? GeoService.userCountryCode.toLowerCase()
           : 'iq';
 
-      // â”€â”€â”€ Ù†ÙØ³ Ù…Ù†Ù‡Ø¬ÙŠØ© Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ: Ù‚Ø±Ø£ Ø§Ù„ÙƒÙˆÙ†ÙÙŠØº Ù…Ù† Ø§Ù„ÙƒØ§Ø´ Ø£ÙˆÙ„Ø§Ù‹ â”€â”€
+      // نفس منهجية هايدفاي: قرأ الكونفيغ من الكاش أولاً
       String? config = await _loadCachedConfig();
 
       if (config != null) {
-        // ÙƒØ§Ø´ Ù…ÙˆØ¬ÙˆØ¯ ÙˆØ­Ø¯ÙŠØ« â†’ Ø§ØªØµØ§Ù„ ÙÙˆØ±ÙŠ Ø¨Ø¯ÙˆÙ† Ø´Ø¨ÙƒØ©
         debugPrint('SingboxProvider: using cached config');
         _status = 'Connecting...';
         notifyListeners();
       } else {
-        // Ù„Ø§ ÙƒØ§Ø´ â†’ Ø§Ø¨Ù†Ù ÙƒÙˆÙ†ÙÙŠØº Ø¬Ø¯ÙŠØ¯ Ù…Ù† Ø§Ù„Ø´Ø¨ÙƒØ©
         debugPrint('SingboxProvider: building fresh config');
         _status = 'Fetching servers...';
         notifyListeners();
@@ -336,7 +322,6 @@ class SingboxProvider extends ChangeNotifier {
           _setFailed('No servers available');
           return;
         }
-        // Ø§Ø­ÙØ¸ Ø§Ù„ÙƒÙˆÙ†ÙÙŠØº Ø§Ù„Ø¬Ø¯ÙŠØ¯ (Ù†ÙØ³ Ù…Ø§ ÙŠÙØ¹Ù„Ù‡ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ Ø¨Ø¹Ø¯ upsertRemote)
         await _saveCachedConfig(config);
       }
 
@@ -345,20 +330,20 @@ class SingboxProvider extends ChangeNotifier {
       _status = 'Connecting...';
       notifyListeners();
 
+      // ✅ FIX: warpOverProxy فقط لـ warpPsiphon — مو Mahsa
+      // Mahsa هي سيرفرات v2ray عادية ولا تحتاج WARP فوقها
       final result = await _method.invokeMethod('start', {
         'config': config,
-        // Hiddify's Mahsa free profile adds its WARP security layer on top.
-        'warpOverProxy': _mode == VpnMode.warpPsiphon || _mode == VpnMode.mahsa,
+        'warpOverProxy': _mode == VpnMode.warpPsiphon,
       });
       debugPrint('start result: $result');
 
-      // â”€â”€â”€ ØªØ¬Ø¯ÙŠØ¯ ØµØ§Ù…Øª ÙÙŠ Ø§Ù„Ø®Ù„ÙÙŠØ© Ø¨Ø¹Ø¯ Ø§Ù„Ø§ØªØµØ§Ù„ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      // Ù†ÙØ³ ForegroundProfilesUpdateNotifier â€” ÙŠØ¬Ø¯Ø¯ Ù„Ùˆ Ø§Ù„ÙƒØ§Ø´ Ù‚Ø¯ÙŠÙ…
+      // تجديد صامت في الخلفية بعد الاتصال
       _scheduleBackgroundRefresh(cc);
 
     } on PlatformException catch (e) {
       if (request != _connectionRevision) return;
-      debugPrint('PlatformException: ${e.code} â€” ${e.message}');
+      debugPrint('PlatformException: ${e.code} — ${e.message}');
       if (e.code == 'INVALID_CONFIG') await _clearConfigCache();
       _setFailed(_friendlyConnectionError(e.message ?? 'Connection failed'));
     } catch (e) {
@@ -389,10 +374,7 @@ class SingboxProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // â”€â”€â”€ ÙƒØ§Ø´ Ø§Ù„ÙƒÙˆÙ†ÙÙŠØº (Ù†ÙØ³ ProfilePathResolver ÙÙŠ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ) â”€â”€
-  // Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ ÙŠØ­ÙØ¸ Ø§Ù„ÙƒÙˆÙ†ÙÙŠØº ÙƒÙ…Ù„Ù JSON Ø¹Ù„Ù‰ Ø§Ù„Ù€ disk
-  // Ù†Ø­Ù† Ù†Ø­ÙØ¸Ù‡ ÙÙŠ SharedPreferences Ù…Ø¹ timestamp â€” Ø£Ø¨Ø³Ø· Ù„ØªØ·Ø¨ÙŠÙ‚Ù†Ø§
-
+  // ─── كاش الكونفيغ (نفس ProfilePathResolver في هايدفاي) ────────────
   Future<String?> _loadCachedConfig() async {
     try {
       final prefs   = await SharedPreferences.getInstance();
@@ -429,9 +411,8 @@ class SingboxProvider extends ChangeNotifier {
     await prefs.remove(_prefLastConfigMode);
   }
 
-  // â”€â”€â”€ ØªØ¬Ø¯ÙŠØ¯ ØµØ§Ù…Øª (Ù†ÙØ³ profiles_update_notifier ÙÙŠ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ) â”€
+  // ─── تجديد صامت (نفس profiles_update_notifier في هايدفاي) ─────────
   void _scheduleBackgroundRefresh(String cc) {
-    // Ø¨Ø¹Ø¯ 3 Ø«ÙˆØ§Ù†ÙŠ Ù…Ù† Ø§Ù„Ø§ØªØµØ§Ù„ â†’ Ø¬Ø¯Ù‘Ø¯ Ø§Ù„Ù€ Mahsa links ÙÙŠ Ø§Ù„Ø®Ù„ÙÙŠØ©
     Future.delayed(const Duration(seconds: 3), () async {
       if (!isConnected) return;
       debugPrint('SingboxProvider: background refresh starting...');
@@ -442,12 +423,12 @@ class SingboxProvider extends ChangeNotifier {
           debugPrint('SingboxProvider: background config refreshed');
         }
       } catch (e) {
-        debugPrint('SingboxProvider: background refresh failed â€” $e');
+        debugPrint('SingboxProvider: background refresh failed — $e');
       }
     });
   }
 
-  // â”€â”€â”€ Build Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Build Config ───────────────────────────────────────────────────
   Future<String?> _buildConfig(String cc) async {
     switch (_mode) {
       case VpnMode.warp:
@@ -495,9 +476,6 @@ class SingboxProvider extends ChangeNotifier {
         if (_onyxServers.isEmpty) return null;
         final selected = _selectedOnyxServer;
         final allRanked = _rankedOnyxServers();
-        // A country card means â€œpick the best server in this countryâ€, not
-        // â€œpin one possibly dead nodeâ€. Let urltest compare same-country nodes.
-        // Ø¯Ø² ÙƒÙ„Ù‡Ù… â€” urltest ÙŠØ¬Ø±Ø¨ ÙƒÙ„Ù‡Ù… ÙˆÙŠØ®ØªØ§Ø± Ø§Ù„Ø´ØºØ§Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹
         final servers = selected == null
             ? allRanked
             : allRanked
@@ -513,9 +491,9 @@ class SingboxProvider extends ChangeNotifier {
           excludedApps: _excludedApps,
           blockAds: _blockAds,
         );
+
       case VpnMode.custom:
         if (_customUrl == null || _customUrl!.isEmpty) return null;
-        // Ù„Ùˆ ÙÙŠ Ø³ÙŠØ±ÙØ± Ù…Ø®ØªØ§Ø± â†’ Ø§ØªØµÙ„ Ø¨ÙŠÙ‡ Ù…Ø¨Ø§Ø´Ø±Ø©
         if (_selectedServer != null) {
           _status = 'Connecting to ${_selectedServer!.name}...';
           notifyListeners();
@@ -527,7 +505,6 @@ class SingboxProvider extends ChangeNotifier {
             blockAds:     _blockAds,
           );
         }
-        // Ù„Ùˆ Ù…Ø§ ÙÙŠ Ø³ÙŠØ±ÙØ± Ù…Ø®ØªØ§Ø± â†’ Ø§ØªØµÙ„ Ø¨Ø£ÙØ¶Ù„ Ø³ÙŠØ±ÙØ± (urltest ØªÙ„Ù‚Ø§Ø¦ÙŠ)
         _status = 'Fetching servers...';
         notifyListeners();
         return await V2RayConfigs.custom(
@@ -539,10 +516,7 @@ class SingboxProvider extends ChangeNotifier {
     }
   }
 
-  // â”€â”€â”€ Settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // â”€â”€â”€ Mode helpers Ù„Ù„Ø¥Ø´Ø¹Ø§Ø±Ø§Øª â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // â”€â”€â”€ OnyxServers â€” Ø§Ù„Ø³ÙŠØ±ÙØ±Ø§Øª Ø§Ù„Ù…Ø¯Ù…Ø¬Ø© Ù…Ù† GitHub â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  // ØªÙØ¬Ù„Ø¨ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ Ø¹Ù†Ø¯ Ø¨Ø¯Ø¡ Ø§Ù„ØªØ·Ø¨ÙŠÙ‚ ÙˆØªÙØ¹Ø±Ø¶ ÙÙŠ Ù‚Ø§Ø¦Ù…Ø© Mahsa
+  // ─── OnyxServers — السيرفرات المدمجة من GitHub ─────────────────────
   List<VpnServer> _onyxServers      = [];
   VpnServer? _selectedOnyxServer;
   bool            _loadingOnyx      = false;
@@ -551,9 +525,9 @@ class SingboxProvider extends ChangeNotifier {
   bool            get loadingOnyx   => _loadingOnyx;
 
   List<VpnServer> _rankedOnyxServers() {
-    // Ù†Ø­Ø§ÙØ¸ Ø¹Ù„Ù‰ ØªØ±ØªÙŠØ¨ servers.json â€” sing-box ÙŠØ®ØªØ§Ø± Ø§Ù„Ø£ÙØ¶Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ Ø¨Ù€ urltest
     return List<VpnServer>.unmodifiable(_onyxServers);
   }
+
   Future<void> loadOnyxServers({bool forceRefresh = false}) async {
     _loadingOnyx = true;
     notifyListeners();
@@ -564,7 +538,7 @@ class SingboxProvider extends ChangeNotifier {
       }
       debugPrint('SingboxProvider: loaded ${_onyxServers.length} Onyx servers');
     } catch (e) {
-      debugPrint('SingboxProvider: OnyxServers error â€” $e');
+      debugPrint('SingboxProvider: OnyxServers error — $e');
     }
     _loadingOnyx = false;
     notifyListeners();
@@ -579,7 +553,7 @@ class SingboxProvider extends ChangeNotifier {
   void selectMode(VpnMode m) {
     if (_state != VpnState.disconnected) return;
     _mode             = m;
-    _userChangedMode  = true; // Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… Ø§Ø®ØªØ§Ø± ÙŠØ¯ÙˆÙŠØ§Ù‹ â†’ Ù„Ø§ ØªØºÙŠØ± ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹
+    _userChangedMode  = true;
     _clearConfigCache();
     notifyListeners();
   }
@@ -592,13 +566,11 @@ class SingboxProvider extends ChangeNotifier {
     await prefs.setString(_prefCustomUrl, _customUrl!);
     await _clearConfigCache();
     notifyListeners();
-    // Ø¬ÙŠØ¨ Ø§Ù„Ø³ÙŠØ±ÙØ±Ø§Øª ÙÙˆØ±Ø§Ù‹ Ø¨Ø¹Ø¯ Ø­ÙØ¸ Ø§Ù„Ù€ URL
     await fetchServers();
-    // Ø§ØªØµÙ„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹ Ø¨Ø£ÙØ¶Ù„ Ø³ÙŠØ±ÙØ± (Auto) Ø¨Ø¹Ø¯ Ù…Ø§ ØªØ¬ÙŠ Ø§Ù„Ø³ÙŠØ±ÙØ±Ø§Øª
     await connectWithMode(VpnMode.custom);
   }
 
-  /// Ø¬Ù„Ø¨ Ù‚Ø§Ø¦Ù…Ø© Ø§Ù„Ø³ÙŠØ±ÙØ±Ø§Øª Ù…Ù† Ø§Ù„Ù€ subscription â€” Ù†ÙØ³ Ù‡Ø§ÙŠØ¯ÙØ§ÙŠ
+  /// جلب قائمة السيرفرات من الـ subscription — نفس هايدفاي
   Future<void> fetchServers() async {
     if (_customUrl == null || _customUrl!.isEmpty) return;
     _loadingServers = true;
@@ -606,7 +578,6 @@ class SingboxProvider extends ChangeNotifier {
     try {
       final list = await V2RayConfigs.parseSubscription(_customUrl!);
       _servers        = list;
-      // Ù„Ùˆ Ø§Ù„Ø³ÙŠØ±ÙØ± Ø§Ù„Ù…Ø®ØªØ§Ø± Ù…Ø§ Ø¹Ø§Ø¯ Ù…ÙˆØ¬ÙˆØ¯ â†’ reset
       if (_selectedServer != null) {
         final stillExists = list.any((s) => s.name == _selectedServer!.name);
         if (!stillExists) _selectedServer = null;
@@ -653,7 +624,7 @@ class SingboxProvider extends ChangeNotifier {
     _blockAds = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefBlockAds, v);
-    await _clearConfigCache(); // ØªØºÙŠÙŠØ± Ø§Ù„Ù€ ads â†’ Ø§Ø­Ø°Ù Ø§Ù„ÙƒØ§Ø´
+    await _clearConfigCache();
     notifyListeners();
   }
 
@@ -676,7 +647,7 @@ class SingboxProvider extends ChangeNotifier {
     await _clearConfigCache();
   }
 
-  // â”€â”€â”€ Timers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ─── Timers ──────────────────────────────────────────────────────────
   void _startTimer() {
     _durationTimer?.cancel();
     _durationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
