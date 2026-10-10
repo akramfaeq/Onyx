@@ -151,8 +151,9 @@ class V2RayConfigs {
   // --- Route ------------------------------------------------
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
-      {'protocol': 'dns',   'outbound': 'dns-out'},
-      {'port':     53,      'outbound': 'dns-out'},
+      // hijack-dns بدل dns outbound المحذوف في sing-box 1.11+
+      {'protocol': 'dns',   'action': 'hijack-dns'},
+      {'port':     53,      'action': 'hijack-dns'},
       {'ip_is_private': true, 'outbound': 'direct'},
       if (blockAds) ...[
         {'rule_set': ['geosite-malware'],  'outbound': 'block'},
@@ -173,7 +174,7 @@ class V2RayConfigs {
     {'type': 'direct',   'tag': 'direct-fragment',
       'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'}},
     {'type': 'block',    'tag': 'block'},
-    {'type': 'dns',      'tag': 'dns-out'},
+    // dns outbound حُذف في sing-box 1.11+ — بدّلناه بـ hijack-dns action في الـ route rules
   ];
 
   // ------------------------------------------------------------
