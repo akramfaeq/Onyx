@@ -32,23 +32,8 @@ jobs:
         cache: true
 
     # ─── نفس هايدفاي: نجيب أحدث إصدار من hiddify-core تلقائياً ───
-    - name: Set hiddify-core version
-      id: core_version
-      run: |
-        VERSION="v4.3.3"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "✅ hiddify-core pinned: $VERSION"
-
-    - name: Download hiddify-core.aar
-      run: |
-        mkdir -p android/app/libs
-        VERSION="${{ steps.core_version.outputs.version }}"
-        URL="https://github.com/hiddify/hiddify-core/releases/download/${VERSION}/hiddify-lib-android.tar.gz"
-        echo "⬇️ Downloading hiddify-core ${VERSION}..."
-        curl -L "$URL" -o /tmp/hiddify-lib.tar.gz
-        tar -xzf /tmp/hiddify-lib.tar.gz -C /tmp/
-        find /tmp -name "*.aar" | head -1 | xargs -I{} cp {} android/app/libs/hiddify-core.aar
-        echo "✅ hiddify-core.aar downloaded"
+    # الـ build.gradle.kts يحمل الكور تلقائياً من v4.1.0
+    # لا نحتاج خطوة تحميل منفصلة
 
     - name: Update Gradle version
       run: |
