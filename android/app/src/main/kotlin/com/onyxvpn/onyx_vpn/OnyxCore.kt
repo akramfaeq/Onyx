@@ -56,6 +56,9 @@ object OnyxCore {
     // نفس ترتيب هايدفاي: setup ثم start — بدون أي gRPC call
     // warpOverProxy: المعامل يُمرَّر لكن الكونفيغ هو اللي يتحكم فعلياً
     // (Dart تكتب الكونفيغ الصحيح قبل استدعاء startCore)
+    // stub — MainActivity يستدعيه لكن الـ setup الحقيقي يصير في startCore
+    fun setup(grpcPort: Int): String = ""
+
     fun startCore(platform: PlatformInterface, warpOverProxy: Boolean) {
         Log.d(TAG, "startCore — warpOverProxy=$warpOverProxy")
 
