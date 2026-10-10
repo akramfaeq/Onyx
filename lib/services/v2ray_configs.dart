@@ -260,7 +260,7 @@ class V2RayConfigs {
     final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
     if (keys == null) {
       // fallback: Psiphon وحده لو ما حصلنا على keys
-      debugPrint('warpViaPsiphon: no WARP keys, falling back to Psiphon only');
+      print('warpViaPsiphon: no WARP keys, falling back to Psiphon only');
       return jsonEncode({
         'log':      {'level': 'warn'},
         'dns':      _dns(blockAds: blockAds),
