@@ -118,7 +118,7 @@ val downloadHiddifyCore = tasks.register<DownloadHiddifyCoreTask>("downloadHiddi
     description = "Ensures app/libs/hiddify-core.aar exists before the app is built."
     group = "build setup"
     coreArchiveUrl.set(
-        "https://github.com/hiddify/hiddify-core/releases/download/v4.1.0/hiddify-lib-android.tar.gz"
+        "https://github.com/hiddify/hiddify-core/releases/download/v4.3.3/hiddify-lib-android.tar.gz"
     )
     minimumAarBytes.set(110_000_000L)
     coreAar.set(layout.projectDirectory.file("libs/hiddify-core.aar"))

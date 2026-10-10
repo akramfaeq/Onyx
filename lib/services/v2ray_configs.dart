@@ -33,6 +33,7 @@ class VpnServer {
 class V2RayConfigs {
 
   // --- DNS --------------------------------------------------
+  // FIX: متوافق مع hiddify-core القديم — بدون type:hosts أو predefined أو static_ips
   static Map<String, dynamic> _dns({bool blockAds = true}) => {
     'servers': [
       {
@@ -53,33 +54,18 @@ class V2RayConfigs {
         'address': 'https://sky.rethinkdns.com/1:-Pf_____9_78YAA8AJ4BmAEA=',
         'detour':  'direct-fragment',
       },
-      // hosts server بدل الـ hosts field المحذوفة في sing-box v1.12+
-      {
-        'type': 'hosts',
-        'tag':  'dns-hosts',
-        'predefined': {
-          'sky.rethinkdns.com': ['188.114.96.3', '188.114.97.3'],
-        },
-      },
       if (blockAds) {'tag': 'block', 'address': 'rcode://success'},
     ],
     'rules': [
-      // hosts rule أول شي قبل أي rule ثاني
-      {
-        'server':     'dns-hosts',
-        'query_type': ['A', 'AAAA'],
-        'domain':     ['sky.rethinkdns.com'],
-      },
-      // 'outbound: any' deprecated في sing-box 1.11+ — بدّلناها بـ action: route مع inbound
-      {'clash_mode': 'global',    'server': 'dns-remote'},
-      {'clash_mode': 'direct',    'server': 'dns-local'},
+      {'clash_mode': 'global', 'server': 'dns-remote'},
+      {'clash_mode': 'direct', 'server': 'dns-local'},
       {
         'domain': ['sky.rethinkdns.com'],
         'server': 'dns-trick',
       },
       if (blockAds) {
-        'rule_set':  ['geosite-malware', 'geosite-phishing', 'geosite-ads'],
-        'server':    'block',
+        'rule_set':      ['geosite-malware', 'geosite-phishing', 'geosite-ads'],
+        'server':        'block',
         'disable_cache': true,
       },
     ],
@@ -149,12 +135,11 @@ class V2RayConfigs {
   ];
 
   // --- Route ------------------------------------------------
+  // FIX: استخدم dns outbound الكلاسيكي — hijack-dns مو موجود في الكور القديم
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
-      // hijack-dns بدل dns outbound المحذوف في sing-box 1.11+
-      {'protocol': 'dns',   'action': 'hijack-dns'},
-      {'port':     53,      'action': 'hijack-dns'},
-      {'ip_is_private': true, 'outbound': 'direct'},
+      {'protocol': 'dns',         'outbound': 'dns-out'},
+      {'ip_is_private': true,     'outbound': 'direct'},
       if (blockAds) ...[
         {'rule_set': ['geosite-malware'],  'outbound': 'block'},
         {'rule_set': ['geosite-phishing'], 'outbound': 'block'},
@@ -170,11 +155,11 @@ class V2RayConfigs {
   };
 
   static List<Map<String, dynamic>> _base() => [
-    {'type': 'direct',   'tag': 'direct'},
-    {'type': 'direct',   'tag': 'direct-fragment',
+    {'type': 'direct', 'tag': 'direct'},
+    {'type': 'direct', 'tag': 'direct-fragment',
       'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'}},
-    {'type': 'block',    'tag': 'block'},
-    // dns outbound حُذف في sing-box 1.11+ — بدّلناه بـ hijack-dns action في الـ route rules
+    {'type': 'block',  'tag': 'block'},
+    {'type': 'dns',    'tag': 'dns-out'},  // FIX: dns outbound الكلاسيكي للكور القديم
   ];
 
   // ------------------------------------------------------------

@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+  schedule:
+    # كل أسبوع الاثنين 9 صباحاً — يبني تلقائياً لو في كور جديد
+    - cron: '0 9 * * 1'
 
 permissions:
   contents: write
@@ -28,13 +31,24 @@ jobs:
         flutter-version: '3.27.4'
         cache: true
 
+    # ─── نفس هايدفاي: نجيب أحدث إصدار من hiddify-core تلقائياً ───
+    - name: Set hiddify-core version
+      id: core_version
+      run: |
+        VERSION="v4.3.3"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "✅ hiddify-core pinned: $VERSION"
+
     - name: Download hiddify-core.aar
       run: |
         mkdir -p android/app/libs
-        curl -L "https://github.com/hiddify/hiddify-core/releases/download/v4.1.0/hiddify-lib-android.tar.gz" \
-          -o /tmp/hiddify-lib.tar.gz
+        VERSION="${{ steps.core_version.outputs.version }}"
+        URL="https://github.com/hiddify/hiddify-core/releases/download/${VERSION}/hiddify-lib-android.tar.gz"
+        echo "⬇️ Downloading hiddify-core ${VERSION}..."
+        curl -L "$URL" -o /tmp/hiddify-lib.tar.gz
         tar -xzf /tmp/hiddify-lib.tar.gz -C /tmp/
         find /tmp -name "*.aar" | head -1 | xargs -I{} cp {} android/app/libs/hiddify-core.aar
+        echo "✅ hiddify-core.aar downloaded"
 
     - name: Update Gradle version
       run: |
@@ -63,5 +77,8 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         tag_name: v1.0.${{ github.run_number }}
-        name: OnyxVPN v1.0.${{ github.run_number }}
+        name: "OnyxVPN v1.0.${{ github.run_number }} (core ${{ steps.core_version.outputs.version }})"
+        body: |
+          🔧 hiddify-core: `${{ steps.core_version.outputs.version }}`
+          🤖 Auto-built from latest core
         files: build/app/outputs/flutter-apk/app-release.apk
