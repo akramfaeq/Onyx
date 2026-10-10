@@ -198,12 +198,13 @@ class V2RayConfigs {
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
         {
-          'type':      'urltest',
-          'tag':       'proxy',
-          'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'url':       'http://cp.cloudflare.com/',
-          'interval':  '10m',
-          'tolerance': 1,
+          'type':                        'urltest',
+          'tag':                         'proxy',
+          'outbounds':                   ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                         'https://www.gstatic.com/generate_204', // FIX: cp.cloudflare.com يحجب IPs عند الطلبات الكثيرة
+          'interval':                    '10m',
+          'tolerance':                   150,   // FIX: كان 1ms
+          'interrupt_exist_connections': false,  // FIX: أضفنا هذا صراحةً
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
@@ -240,6 +241,14 @@ class V2RayConfigs {
 
   // ------------------------------------------------------------
   // ✅ WARP via PSIPHON
+  // المنهجية: Psiphon يتصل أولاً → WARP يمشي من فوقه
+  //
+  // الكور (hiddify-core v4.x) يحتاج:
+  //   1. كونفيغ فيه WARP WireGuard outbounds (نفس warp() العادي)
+  //   2. parameter منفصل 'warpOverProxy: true' عبر MethodChannel
+  //      → الكور يضيف Psiphon كـ detour تحت WireGuard تلقائياً
+  //
+  // لو أرسلنا Psiphon فقط بدون WARP keys → الكور ما يعرف يربط الاتصال
   // ------------------------------------------------------------
   static Future<String> warpViaPsiphon({
     String countryCode = 'iq',
@@ -247,12 +256,62 @@ class V2RayConfigs {
     bool blockAds = true,
     bool forceNewKeys = false,
   }) async {
+    // نحتاج WARP keys — الكور يستخدمها مع Psiphon كـ detour
+    final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
+    if (keys == null) {
+      // fallback: Psiphon وحده لو ما حصلنا على keys
+      debugPrint('warpViaPsiphon: no WARP keys, falling back to Psiphon only');
+      return jsonEncode({
+        'log':      {'level': 'warn'},
+        'dns':      _dns(blockAds: blockAds),
+        'inbounds': _inbounds(excluded: excludedApps),
+        'outbounds': [
+          {'type': 'psiphon', 'tag': 'proxy'},
+          ..._base(),
+        ],
+        'route': _route(cc: countryCode, blockAds: blockAds),
+      });
+    }
+
+    final privateKey = keys.privateKey;
+    final peerPub    = keys.peerPublicKey;
+    final reserved   = keys.reserved;
+    final v4         = keys.v4Address;
+    final v6         = keys.v6Address;
+
+    // نفس بنية warp() — الكور يضيف Psiphon كـ detour عند warpOverProxy: true
+    Map<String, dynamic> wg(String tag, int port) => {
+      'type':            'wireguard',
+      'tag':             tag,
+      'server':          'engage.cloudflareclient.com',
+      'server_port':     port,
+      'local_address':   ['$v4/32', '$v6/128'],
+      'private_key':     privateKey,
+      'peer_public_key': peerPub,
+      'reserved':        reserved,
+      'mtu':             1280,
+    };
+
     return jsonEncode({
-      'log': {'level': 'warn'},
-      'dns': _dns(blockAds: blockAds),
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
-        {'type': 'psiphon', 'tag': 'proxy'},
+        {
+          'type':                        'urltest',
+          'tag':                         'proxy',
+          'outbounds':                   ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                         'https://www.gstatic.com/generate_204',
+          'interval':                    '10m',
+          'tolerance':                   150,
+          'interrupt_exist_connections': false,
+        },
+        wg('warp-2408', 2408),
+        wg('warp-500',  500),
+        wg('warp-1701', 1701),
+        wg('warp-4500', 4500),
+        // Psiphon موجود كـ outbound منفصل — الكور يربطه مع WARP عبر warpOverProxy
+        {'type': 'psiphon', 'tag': 'psiphon-out'},
         ..._base(),
       ],
       'route': _route(cc: countryCode, blockAds: blockAds),
@@ -268,15 +327,7 @@ class V2RayConfigs {
     bool blockAds = true,
   }) async {
     final links = await MahsaService.getLinks();
-
-    // لو ما في سيرفرات → استخدم Psiphon كـ fallback (يشتغل دائماً بدون سيرفرات خارجية)
-    if (links.isEmpty) {
-      return psiphon(
-        countryCode: countryCode,
-        excludedApps: excludedApps,
-        blockAds: blockAds,
-      );
-    }
+    if (links.isEmpty) return null;
 
     final outbounds = <Map<String, dynamic>>[];
     for (final link in links) {
@@ -284,15 +335,7 @@ class V2RayConfigs {
       if (o != null) outbounds.add(o);
       if (outbounds.length >= 20) break;
     }
-
-    // لو ما انحلّ أي link → fallback لـ Psiphon
-    if (outbounds.isEmpty) {
-      return psiphon(
-        countryCode: countryCode,
-        excludedApps: excludedApps,
-        blockAds: blockAds,
-      );
-    }
+    if (outbounds.isEmpty) return null;
 
     return _buildFromOutbounds(
       outbounds: outbounds,
@@ -709,12 +752,14 @@ class V2RayConfigs {
           'type':                        'urltest',
           'tag':                         'proxy',
           'outbounds':                   tags,
-          'url':                         'http://www.gstatic.com/generate_204',
-          'interval':                    '3m',
-          'tolerance':                   50,
+          'url':                         'https://www.gstatic.com/generate_204',
+          'interval':                    '10m',
+          'tolerance':                   150,   // FIX: كان 1ms → يسبب تبديل سيرفر عند كل اختبار
           'idle_timeout':                '30m',
-          'interrupt_exist_connections': false,
+          'interrupt_exist_connections': false,  // FIX: كان true → يقطع الاتصال عند كل تبديل
         },
+        // FIX: حذف proxy-fallback — كان يختبر كل 30 ثانية ويقطع الاتصال باستمرار
+        // sing-box يتعامل مع الفشل تلقائياً عبر proxy الرئيسي
         ...safeOutbounds,
         ..._base(),
       ],
