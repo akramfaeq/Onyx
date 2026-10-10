@@ -31,8 +31,10 @@ jobs:
     - name: Download hiddify-core.aar
       run: |
         mkdir -p android/app/libs
-        curl -L "https://github.com/hiddify/hiddify-core/releases/download/v2.5.8/hiddify-core-android.aar" \
-          -o android/app/libs/hiddify-core.aar
+        curl -L "https://github.com/hiddify/hiddify-core/releases/download/v4.1.0/hiddify-lib-android.tar.gz" \
+          -o /tmp/hiddify-lib.tar.gz
+        tar -xzf /tmp/hiddify-lib.tar.gz -C /tmp/
+        find /tmp -name "*.aar" | head -1 | xargs -I{} cp {} android/app/libs/hiddify-core.aar
 
     - name: Update Gradle version
       run: |
