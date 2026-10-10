@@ -70,7 +70,7 @@ class V2RayConfigs {
     'final':             'dns-remote',
     'independent_cache': true,
     'strategy':          'ipv4_only',
-    'static_ips': {
+    'hosts': {
       'sky.rethinkdns.com': ['188.114.96.3', '188.114.97.3'],
     },
   };
@@ -87,7 +87,7 @@ class V2RayConfigs {
       'strict_route':   true,
       'sniff':          true,
       'sniff_override_destination': false,
-      if (excluded.isNotEmpty) 'exclude_package': excluded,
+      if (excluded.isNotEmpty) 'excluded_packages': excluded,
     }
   ];
 
