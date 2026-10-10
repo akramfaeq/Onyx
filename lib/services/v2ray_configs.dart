@@ -64,7 +64,7 @@ class V2RayConfigs {
         'server': 'dns-trick',
       },
       if (blockAds) {
-        'rule_set':      ['geosite-malware', 'geosite-phishing', 'geosite-ads'],
+        'geosite': ['category-ads-all', 'malware', 'phishing'],
         'server':        'block',
         'disable_cache': true,
       },
@@ -81,7 +81,7 @@ class V2RayConfigs {
       'tag':            'tun-in',
       'inet4_address':  '172.19.0.1/30',
       'inet6_address':  'fdfe:dcba:9876::1/126',
-      'mtu':            9000,
+      'mtu':            1500,
       'auto_route':     true,
       'strict_route':   true,
       'sniff':          true,
@@ -90,65 +90,21 @@ class V2RayConfigs {
     }
   ];
 
-  // --- Rule Sets (remote from hiddify-geo) ------------------
-  static List<Map<String, dynamic>> _ruleSets(String cc) => [
-    {
-      'type':            'remote',
-      'tag':             'geoip-${cc.toLowerCase()}',
-      'format':          'binary',
-      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-ip/geoip-${cc.toLowerCase()}.srs',
-      'download_detour': 'direct',
-      'update_interval': '120h',
-    },
-    {
-      'type':            'remote',
-      'tag':             'geosite-${cc.toLowerCase()}',
-      'format':          'binary',
-      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-${cc.toLowerCase()}.srs',
-      'download_detour': 'direct',
-      'update_interval': '120h',
-    },
-    {
-      'type':            'remote',
-      'tag':             'geosite-malware',
-      'format':          'binary',
-      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-malware.srs',
-      'download_detour': 'direct',
-      'update_interval': '120h',
-    },
-    {
-      'type':            'remote',
-      'tag':             'geosite-phishing',
-      'format':          'binary',
-      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-phishing.srs',
-      'download_detour': 'direct',
-      'update_interval': '120h',
-    },
-    {
-      'type':            'remote',
-      'tag':             'geosite-ads',
-      'format':          'binary',
-      'url':             'https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/geo-site/geosite-category-ads-all.srs',
-      'download_detour': 'direct',
-      'update_interval': '120h',
-    },
-  ];
-
   // --- Route ------------------------------------------------
-  // FIX: استخدم dns outbound الكلاسيكي — hijack-dns مو موجود في الكور القديم
+  // FIX: استخدم geoip/geosite المدمجة في hiddify-core بدل remote rule sets
+  // remote rule sets تحتاج اتصال بـ GitHub عند أول تشغيل → تسبب الانقطاع
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
       {'protocol': 'dns',         'outbound': 'dns-out'},
       {'ip_is_private': true,     'outbound': 'direct'},
       if (blockAds) ...[
-        {'rule_set': ['geosite-malware'],  'outbound': 'block'},
-        {'rule_set': ['geosite-phishing'], 'outbound': 'block'},
-        {'rule_set': ['geosite-ads'],      'outbound': 'block'},
+        {'geosite': ['malware'],           'outbound': 'block'},
+        {'geosite': ['phishing'],          'outbound': 'block'},
+        {'geosite': ['category-ads-all'],  'outbound': 'block'},
       ],
-      {'rule_set': ['geoip-${cc.toLowerCase()}'],   'outbound': 'direct'},
-      {'rule_set': ['geosite-${cc.toLowerCase()}'], 'outbound': 'direct'},
+      {'geoip':    [cc.toLowerCase()],     'outbound': 'direct'},
+      {'geosite':  [cc.toLowerCase()],     'outbound': 'direct'},
     ],
-    'rule_set':              _ruleSets(cc),
     'final':                 'proxy',
     'auto_detect_interface': true,
     'override_android_vpn':  true,
@@ -196,13 +152,15 @@ class V2RayConfigs {
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
-        // FIX: v4.1.0 يحول urltest+outbounds لـ balancer داخلياً ويفشل
-        // الحل: نستخدم selector بدل urltest — يختار أول سيرفر بدون balancer
+        // urltest — يختار المنفذ الأسرع تلقائياً (نفس طريقة هايدفاي)
         {
-          'type':     'selector',
-          'tag':      'proxy',
-          'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'default':  'warp-2408',
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
@@ -297,12 +255,15 @@ class V2RayConfigs {
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
-        // FIX: selector بدل urltest لتجنب balancer bug في v4.1.0
+        // urltest — يختار المنفذ الأسرع تلقائياً (نفس طريقة هايدفاي)
         {
-          'type':      'selector',
-          'tag':       'proxy',
-          'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'default':   'warp-2408',
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
@@ -745,13 +706,15 @@ class V2RayConfigs {
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
+        // urltest — يختار السيرفر الأسرع تلقائياً (نفس طريقة هايدفاي)
         {
-          // FIX: selector بدل urltest — hiddify-core القديم يحول urltest+outbounds
-          // لـ balancer داخلياً ويفشل بـ "unknown load balancer"
-          'type':     'selector',
-          'tag':      'proxy',
-          'outbounds': tags,
-          'default':  tags.first,
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  tags,
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
         },
         ...safeOutbounds,
         ..._base(),

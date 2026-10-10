@@ -74,9 +74,9 @@ class SingboxProvider extends ChangeNotifier {
   ];
   int _fallbackIndex = 0;
 
-  // Connection timeout — هايدفاي يستخدم 30 ثانية
+  // Connection timeout — FIX: 30 ثانية (15 كانت تسبب false timeout بالعراق)
   Timer? _connectTimeoutTimer;
-  static const _connectTimeout = Duration(seconds: 15);
+  static const _connectTimeout = Duration(seconds: 30);
 
   // ─── Getters ─────────────────────────────────────────────────────
   VpnState        get state          => _state;
@@ -581,12 +581,14 @@ class SingboxProvider extends ChangeNotifier {
   }
 
   // ─── Background Refresh ──────────────────────────────────────────
+  // FIX: نأخر الـ refresh لـ 30 ثانية بعد الاتصال بدل 3 ثواني
+  // الـ 3 ثواني كانت تسبب network requests أثناء تأسيس الاتصال → انقطاع
   void _scheduleBackgroundRefresh(String cc) {
-    Future.delayed(const Duration(seconds: 3), () async {
+    Future.delayed(const Duration(seconds: 30), () async {
       if (!isConnected) return;
       try {
         final newConfig = await _buildConfig(cc);
-        if (newConfig != null && newConfig.isNotEmpty) {
+        if (newConfig != null && newConfig.isNotEmpty && isConnected) {
           await _saveCachedConfig(newConfig);
           debugPrint('SingboxProvider: background config refreshed');
         }
