@@ -268,7 +268,15 @@ class V2RayConfigs {
     bool blockAds = true,
   }) async {
     final links = await MahsaService.getLinks();
-    if (links.isEmpty) return null;
+
+    // لو ما في سيرفرات → استخدم Psiphon كـ fallback (يشتغل دائماً بدون سيرفرات خارجية)
+    if (links.isEmpty) {
+      return psiphon(
+        countryCode: countryCode,
+        excludedApps: excludedApps,
+        blockAds: blockAds,
+      );
+    }
 
     final outbounds = <Map<String, dynamic>>[];
     for (final link in links) {
@@ -276,7 +284,15 @@ class V2RayConfigs {
       if (o != null) outbounds.add(o);
       if (outbounds.length >= 20) break;
     }
-    if (outbounds.isEmpty) return null;
+
+    // لو ما انحلّ أي link → fallback لـ Psiphon
+    if (outbounds.isEmpty) {
+      return psiphon(
+        countryCode: countryCode,
+        excludedApps: excludedApps,
+        blockAds: blockAds,
+      );
+    }
 
     return _buildFromOutbounds(
       outbounds: outbounds,
@@ -694,20 +710,10 @@ class V2RayConfigs {
           'tag':                         'proxy',
           'outbounds':                   tags,
           'url':                         'http://www.gstatic.com/generate_204',
-          'interval':                    '10m',
-          'tolerance':                   1,
+          'interval':                    '3m',
+          'tolerance':                   50,
           'idle_timeout':                '30m',
-          'interrupt_exist_connections': true,
-        },
-        {
-          'type':      'urltest',
-          'tag':       'proxy-fallback',
-          'outbounds': tags,
-          'url':       'http://www.gstatic.com/generate_204',
-          'interval':  '30s',
-          'tolerance': 500,
-          'idle_timeout': '5m',
-          'interrupt_exist_connections': true,
+          'interrupt_exist_connections': false,
         },
         ...safeOutbounds,
         ..._base(),
