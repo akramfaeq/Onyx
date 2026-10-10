@@ -196,14 +196,13 @@ class V2RayConfigs {
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
+        // FIX: v4.1.0 يحول urltest+outbounds لـ balancer داخلياً ويفشل
+        // الحل: نستخدم selector بدل urltest — يختار أول سيرفر بدون balancer
         {
-          'type':                        'urltest',
-          'tag':                         'proxy',
-          'outbounds':                   ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'url':                         'https://www.gstatic.com/generate_204', // FIX: cp.cloudflare.com يحجب IPs عند الطلبات الكثيرة
-          'interval':                    '10m',
-          'tolerance':                   150,   // FIX: كان 1ms
-          'interrupt_exist_connections': false,  // FIX: أضفنا هذا صراحةً
+          'type':     'selector',
+          'tag':      'proxy',
+          'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'default':  'warp-2408',
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
@@ -298,20 +297,17 @@ class V2RayConfigs {
       'dns':      _dns(blockAds: blockAds),
       'inbounds': _inbounds(excluded: excludedApps),
       'outbounds': [
+        // FIX: selector بدل urltest لتجنب balancer bug في v4.1.0
         {
-          'type':                        'urltest',
-          'tag':                         'proxy',
-          'outbounds':                   ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
-          'url':                         'https://www.gstatic.com/generate_204',
-          'interval':                    '10m',
-          'tolerance':                   150,
-          'interrupt_exist_connections': false,
+          'type':      'selector',
+          'tag':       'proxy',
+          'outbounds': ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'default':   'warp-2408',
         },
         wg('warp-2408', 2408),
         wg('warp-500',  500),
         wg('warp-1701', 1701),
         wg('warp-4500', 4500),
-        // Psiphon موجود كـ outbound منفصل — الكور يربطه مع WARP عبر warpOverProxy
         {'type': 'psiphon', 'tag': 'psiphon-out'},
         ..._base(),
       ],
