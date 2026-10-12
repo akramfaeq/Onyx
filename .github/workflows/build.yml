@@ -1,1 +1,69 @@
+name: Build Android APK
 
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+  schedule:
+    # كل أسبوع الاثنين 9 صباحاً — يبني تلقائياً لو في كور جديد
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Set up Flutter
+      uses: subosito/flutter-action@v2
+      with:
+        flutter-version: '3.27.4'
+        cache: true
+
+    # ─── نفس هايدفاي: نجيب أحدث إصدار من hiddify-core تلقائياً ───
+    # الـ build.gradle.kts يحمل الكور تلقائياً من v4.1.0
+    # لا نحتاج خطوة تحميل منفصلة
+
+    - name: Update Gradle version
+      run: |
+        sed -i 's#gradle-8.3-all.zip#gradle-8.9-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+
+    - name: Install dependencies
+      run: flutter pub get
+
+    - name: Prepare Keystore
+      env:
+        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      run: |
+        if [ -n "$KEYSTORE_BASE64" ]; then
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+        else
+          keytool -genkeypair -keystore android/app/upload-keystore.jks \
+            -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass nemo112233 -keypass nemo112233 \
+            -dname "CN=OnyxVPN, O=Onyx, C=IQ"
+        fi
+
+    - name: Build APK
+      run: flutter build apk --release
+
+    - name: Publish APK to Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v1.0.${{ github.run_number }}
+        name: "OnyxVPN v1.0.${{ github.run_number }} (core ${{ steps.core_version.outputs.version }})"
+        body: |
+          🔧 hiddify-core: `${{ steps.core_version.outputs.version }}`
+          🤖 Auto-built from latest core
+        files: build/app/outputs/flutter-apk/app-release.apk
