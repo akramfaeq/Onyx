@@ -109,8 +109,21 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         try {
             showNotification("Connecting...", "OnyxVPN is starting")
 
+            // FIX: Mobile.start() يستدعي openTun() بشكل async عبر PlatformInterface.
+            // لا نتحقق من tunFd مباشرة بعد startCore() — نانتظر حتى يُستدعى openTun().
+            // OnyxChannel سيرسل "connected" أو "failed" عبر Flutter EventChannel.
             OnyxCore.startCore(this@OnyxVpnService, warpOverProxy)
-            check(tunFd != null) { "Core started without establishing the Android VPN interface" }
+
+            // انتظر حتى يُستدعى openTun() (max 10 ثواني)
+            val deadline = System.currentTimeMillis() + 10_000L
+            while (tunFd == null && System.currentTimeMillis() < deadline) {
+                delay(100)
+            }
+
+            if (tunFd == null) {
+                throw IllegalStateException("Core started but TUN interface was not established within 10s")
+            }
+
             lastRxBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
             lastTxBytes = TrafficStats.getUidTxBytes(android.os.Process.myUid())
             lastStatsAt = android.os.SystemClock.elapsedRealtime()
