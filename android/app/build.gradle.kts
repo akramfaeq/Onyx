@@ -13,6 +13,12 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// hiddify-core local native VPN core used by OnyxVpnService.
+//
+// `android/app/libs/hiddify-core.aar` is intentionally NOT tracked by git
+// (see the root .gitignore), so it is fetched from the hiddify-core GitHub
+// release during the build. The task is skipped whenever a usable AAR is
+// already in place, which is the normal case for local builds.
 abstract class DownloadHiddifyCoreTask : DefaultTask() {
 
     /**
@@ -85,7 +91,8 @@ abstract class DownloadHiddifyCoreTask : DefaultTask() {
                 versionStamp.exists() && versionStamp.readText().trim() == requestedCore
             ) {
                 logger.warn("Could not refresh the matching Hiddify core archive; using the local copy.")
-            } else {                throw GradleException("Unable to obtain hiddify-core.aar: ${e.message}", e)
+            } else {
+                throw GradleException("Unable to obtain hiddify-core.aar: ${e.message}", e)
             }
         } finally {
             archive.delete()
@@ -122,6 +129,19 @@ tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(downloadHiddifyCore)
 }
 
+// Release signing.
+//
+// Create `android/key.properties` (git-ignored) next to this file, together
+// with your upload keystore, to produce a Play Store ready build:
+//
+//   storeFile=../onyx-upload-key.jks
+//   storePassword=…
+//   keyAlias=upload
+//   keyPassword=…
+//
+// `storeFile` is resolved relative to the `android/` directory. While the file
+// is missing the release build falls back to the debug keystore, so plain
+// `flutter build apk --release` keeps working locally.
 val keyPropertiesFile = rootProject.file("key.properties")
 val keyProperties = JavaProperties().apply {
     if (keyPropertiesFile.exists()) {
@@ -179,6 +199,8 @@ android {
 
 kotlin {
     compilerOptions {
+        // `kotlinOptions` was removed from the Android extension; the Kotlin
+        // Gradle plugin's own `compilerOptions` block replaces it.
         jvmTarget = JvmTarget.JVM_17
     }
 }
