@@ -49,10 +49,9 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         const val NOTIF_ID     = 100
         const val CHANNEL_ID   = "onyx_vpn"
 
-        // FIX: نقلنا isRunning و starting لـ companion بشكل صحيح مع @Volatile
         @Volatile var instance: OnyxVpnService? = null
         @Volatile var isRunning = false
-        val starting = AtomicBoolean(false)  // FIX: private → internal لأن startVpn يستخدمه
+        val starting = AtomicBoolean(false)
     }
 
     private val scope  = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -84,9 +83,6 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         interfaceCallbacks.keys.toList().forEach { closeDefaultInterfaceMonitor(it) }
         instance = null
         scope.cancel()
-        // ─── الإصلاح: closeAll() عند إغلاق التطبيق كلياً فقط ───────────
-        // stopVpn() العادي يستدعي Mobile.stop() فقط بدون close()
-        // هنا نستدعي closeAll() لأن الـ Service يُدمَّر نهائياً
         runBlocking { stopVpn() }
         OnyxCore.closeAll()
         super.onDestroy()
@@ -105,117 +101,109 @@ class OnyxVpnService : VpnService(), PlatformInterface {
     // ─── Start / Stop ─────────────────────────────────────────
     private suspend fun startVpn(warpOverProxy: Boolean) = withContext(Dispatchers.IO) {
         vpnOperationMutex.withLock {
-        if (isRunning || !starting.compareAndSet(false, true)) return@withContext
-        try {
-            showNotification("Connecting...", "OnyxVPN is starting")
+            if (isRunning || !starting.compareAndSet(false, true)) return@withContext
+            try {
+                showNotification("Connecting...", "OnyxVPN is starting")
 
-            // FIX: Mobile.start() يستدعي openTun() بشكل async عبر PlatformInterface.
-            // لا نتحقق من tunFd مباشرة بعد startCore() — نانتظر حتى يُستدعى openTun().
-            // OnyxChannel سيرسل "connected" أو "failed" عبر Flutter EventChannel.
-            OnyxCore.startCore(this@OnyxVpnService, warpOverProxy)
+                // Mobile.start() calls openTun() asynchronously via PlatformInterface.
+                // We poll until openTun() sets tunFd (max 10 seconds).
+                OnyxCore.startCore(this@OnyxVpnService, warpOverProxy)
 
-            // انتظر حتى يُستدعى openTun() (max 10 ثواني)
-            val deadline = System.currentTimeMillis() + 10_000L
-            while (tunFd == null && System.currentTimeMillis() < deadline) {
-                delay(100)
+                val deadline = System.currentTimeMillis() + 10_000L
+                while (tunFd == null && System.currentTimeMillis() < deadline) {
+                    delay(100)
+                }
+
+                if (tunFd == null) {
+                    throw IllegalStateException("Core started but TUN interface was not established within 10s")
+                }
+
+                lastRxBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
+                lastTxBytes = TrafficStats.getUidTxBytes(android.os.Process.myUid())
+                lastStatsAt = android.os.SystemClock.elapsedRealtime()
+
+                isRunning = true
+                showNotification("Connected", "OnyxVPN is active — tap to disconnect")
+                Log.d(TAG, "VPN started ✅")
+                OnyxChannel.sendStatus("connected")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "startVpn error: ${e.message}")
+                OnyxChannel.sendStatus("failed:${e.message}")
+                runCatching { OnyxCore.stopCore() }
+                tunFd?.close()
+                tunFd = null
+                isRunning = false
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } finally {
+                starting.set(false)
             }
-
-            if (tunFd == null) {
-                throw IllegalStateException("Core started but TUN interface was not established within 10s")
-            }
-
-            lastRxBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
-            lastTxBytes = TrafficStats.getUidTxBytes(android.os.Process.myUid())
-            lastStatsAt = android.os.SystemClock.elapsedRealtime()
-
-            isRunning = true
-            showNotification("Connected", "OnyxVPN is active — tap to disconnect")
-            Log.d(TAG, "VPN started ✅")
-            OnyxChannel.sendStatus("connected")
-
-        } catch (e: Exception) {
-            Log.e(TAG, "startVpn error: ${e.message}")
-            OnyxChannel.sendStatus("failed:${e.message}")
-            runCatching { OnyxCore.stopCore() }
-            tunFd?.close()
-            tunFd = null
-            isRunning = false
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-        } finally {
-            starting.set(false)
-        }
         }
     }
 
     private suspend fun stopVpn() = withContext(Dispatchers.IO) {
         vpnOperationMutex.withLock {
-        // ─── الإصلاح: أوقف كل شيء أولاً، ثم أرسل "disconnected" ─────────
-        // الترتيب القديم كان: stopCore → sendStatus("disconnected")
-        // المشكلة: Flutter يستقبل "disconnected" وقد يبدأ reconnect فوراً
-        //          بينما stopCore() لسه ما انتهى → تعارض في Mobile engine
-        try { OnyxCore.stopCore() }
-        catch (e: Exception) { Log.w(TAG, "stop error: " + e.message) }
+            try { OnyxCore.stopCore() }
+            catch (e: Exception) { Log.w(TAG, "stop error: " + e.message) }
 
-        tunFd?.close()
-        tunFd    = null
-        isRunning = false
-        starting.set(false)
+            tunFd?.close()
+            tunFd    = null
+            isRunning = false
+            starting.set(false)
 
-        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_ID)
-        stopForeground(STOP_FOREGROUND_REMOVE)
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_ID)
+            stopForeground(STOP_FOREGROUND_REMOVE)
 
-        // ─── أرسل "disconnected" بعد إغلاق كل شيء ───────────────────────
-        // تأخير 150ms يضمن أن Mobile.stop() اكتمل قبل أي reconnect من Flutter
-        delay(150)
-        OnyxChannel.sendStatus("disconnected")
-        Log.d(TAG, "VPN stopped")
+            delay(150)
+            OnyxChannel.sendStatus("disconnected")
+            Log.d(TAG, "VPN stopped")
         }
     }
 
-    // ─── Stats — يُرسل لـ Flutter كل ثانية ──────────────────
+    // ─── Stats ────────────────────────────────────────────────
     @Synchronized
     fun queryStats(): Pair<Long, Long> {
         val now = android.os.SystemClock.elapsedRealtime()
         val rx = TrafficStats.getUidRxBytes(android.os.Process.myUid())
         val tx = TrafficStats.getUidTxBytes(android.os.Process.myUid())
         if (rx < 0 || tx < 0 || lastRxBytes < 0 || lastTxBytes < 0 || lastStatsAt == 0L) {
-            lastRxBytes = rx
-            lastTxBytes = tx
-            lastStatsAt = now
+            lastRxBytes = rx; lastTxBytes = tx; lastStatsAt = now
             return Pair(0L, 0L)
         }
         val elapsed = (now - lastStatsAt).coerceAtLeast(1L)
         val down = ((rx - lastRxBytes).coerceAtLeast(0L) * 1000L) / elapsed
-        val up = ((tx - lastTxBytes).coerceAtLeast(0L) * 1000L) / elapsed
-        lastRxBytes = rx
-        lastTxBytes = tx
-        lastStatsAt = now
+        val up   = ((tx - lastTxBytes).coerceAtLeast(0L) * 1000L) / elapsed
+        lastRxBytes = rx; lastTxBytes = tx; lastStatsAt = now
         return Pair(down, up)
     }
 
-    // ─── PlatformInterface ────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+    // PlatformInterface — hiddify-core v5
+    // ═══════════════════════════════════════════════════════════
+
     override fun autoDetectInterfaceControl(fd: Int) { protect(fd) }
 
+    // ── TUN ──────────────────────────────────────────────────
     override fun openTun(options: TunOptions): Int {
         val builder = Builder()
             .setSession("OnyxVPN")
-            .setMtu(options.mtu)
+            .setMtu(options.getMTU())  // v5: getMTU()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
 
-        // IPv4
-        val v4 = options.inet4Address
+        // IPv4 addresses — v5: getInet4Address()
+        val v4 = options.getInet4Address()
         while (v4.hasNext()) { val a = v4.next(); builder.addAddress(a.address(), a.prefix()) }
 
-        // IPv6
-        val v6 = options.inet6Address
+        // IPv6 addresses — v5: getInet6Address()
+        val v6 = options.getInet6Address()
         while (v6.hasNext()) { val a = v6.next(); builder.addAddress(a.address(), a.prefix()) }
 
-        // Routes
-        if (options.autoRoute) {
+        // Routes — v5: getAutoRoute(), getInet4RouteAddress(), getInet6RouteAddress()
+        if (options.getAutoRoute()) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val r4 = options.inet4RouteAddress
+                val r4 = options.getInet4RouteAddress()
                 var hasIpv4Route = false
                 while (r4.hasNext()) {
                     val address = r4.next()
@@ -224,7 +212,7 @@ class OnyxVpnService : VpnService(), PlatformInterface {
                 }
                 if (!hasIpv4Route) builder.addRoute("0.0.0.0", 0)
 
-                val r6 = options.inet6RouteAddress
+                val r6 = options.getInet6RouteAddress()
                 var hasIpv6Route = false
                 while (r6.hasNext()) {
                     val address = r6.next()
@@ -238,10 +226,15 @@ class OnyxVpnService : VpnService(), PlatformInterface {
             }
         }
 
-        val dns = options.dnsServerAddress.value
-        if (dns.isNotBlank()) builder.addDnsServer(dns)
+        // DNS — v5: getDNSServerAddress() returns StringIterator (not StringBox)
+        val dnsIter = options.getDNSServerAddress()
+        while (dnsIter.hasNext()) {
+            val dns = dnsIter.next()
+            if (dns.isNotBlank()) builder.addDnsServer(dns)
+        }
 
-        val includedPackages = options.includePackage
+        // Per-app routing — v5: getIncludePackage(), getExcludePackage()
+        val includedPackages = options.getIncludePackage()
         var hasIncludedPackages = false
         while (includedPackages.hasNext()) {
             val selectedPackage = includedPackages.next()
@@ -251,12 +244,13 @@ class OnyxVpnService : VpnService(), PlatformInterface {
             hasIncludedPackages = true
         }
         if (!hasIncludedPackages) {
-            val excluded = options.excludePackage
+            val excluded = options.getExcludePackage()
             while (excluded.hasNext()) {
                 runCatching { builder.addDisallowedApplication(excluded.next()) }
             }
             runCatching { builder.addDisallowedApplication(this@OnyxVpnService.packageName) }
         }
+
         val pfd = builder.establish() ?: error("VPN establish failed")
         tunFd = pfd
         return pfd.fd
@@ -269,6 +263,7 @@ class OnyxVpnService : VpnService(), PlatformInterface {
     override fun useProcFS() = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
     override fun includeAllNetworks() = false
 
+    // ── Connection owner — v5: no androidPackageName field; use setAndroidPackageNames() ──
     override fun findConnectionOwner(
         ipProtocol: Int,
         sourceAddress: String,
@@ -287,14 +282,17 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         }.getOrDefault(-1)
         val app = if (uid >= 0) packageManager.getPackagesForUid(uid)?.firstOrNull().orEmpty() else ""
         return ConnectionOwner().also {
-            it.userId = uid
+            it.userId   = uid
             it.userName = app
-            it.androidPackageName = app
+            // v5: setAndroidPackageNames() replaces the removed androidPackageName field
+            it.setAndroidPackageNames(StringValues(if (app.isNotEmpty()) listOf(app) else emptyList()))
         }
     }
 
     override fun sendNotification(n: CoreNotification?) {}
     override fun clearDNSCache() {}
+
+    // ── Interface monitor ─────────────────────────────────────
     override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
         val callback = interfaceCallbacks.remove(listener) ?: return
         val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -308,7 +306,7 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         }
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) = publishDefaultInterface(connectivity, listener)
-            override fun onLost(network: Network) = publishDefaultInterface(connectivity, listener)
+            override fun onLost(network: Network)      = publishDefaultInterface(connectivity, listener)
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
                 publishDefaultInterface(connectivity, listener)
             override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) =
@@ -330,14 +328,15 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         connectivity: ConnectivityManager,
         listener: InterfaceUpdateListener
     ) {
-        val network = connectivity.activeNetwork
-        val properties = network?.let { connectivity.getLinkProperties(it) }
+        val network      = connectivity.activeNetwork
+        val properties   = network?.let { connectivity.getLinkProperties(it) }
         val capabilities = network?.let { connectivity.getNetworkCapabilities(it) }
-        val name = properties?.interfaceName.orEmpty()
+        val name  = properties?.interfaceName.orEmpty()
         val index = runCatching { JavaNetworkInterface.getByName(name)?.index ?: -1 }.getOrDefault(-1)
         val metered = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
         listener.updateDefaultInterface(name, index, metered, false)
     }
+
     override fun localDNSTransport(): LocalDNSTransport? = null
 
     override fun systemCertificates(): StringIterator {
@@ -356,14 +355,14 @@ class OnyxVpnService : VpnService(), PlatformInterface {
     }
 
     override fun getInterfaces(): NetworkInterfaceIterator {
-        val interfaces = mutableListOf<NetworkInterface>()
+        val interfaces   = mutableListOf<NetworkInterface>()
         val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
         val networkDetails = mutableMapOf<String, Pair<List<String>, NetworkCapabilities?>>()
         runCatching {
             connectivity.allNetworks.forEach { network ->
                 val properties = connectivity.getLinkProperties(network) ?: return@forEach
                 val name = properties.interfaceName ?: return@forEach
-                val dns = properties.dnsServers.map { it.hostAddress.orEmpty().substringBefore('%') }
+                val dns  = properties.dnsServers.map { it.hostAddress.orEmpty().substringBefore('%') }
                     .filter { it.isNotBlank() }
                 networkDetails[name] = dns to connectivity.getNetworkCapabilities(network)
             }
@@ -371,29 +370,32 @@ class OnyxVpnService : VpnService(), PlatformInterface {
         val available = JavaNetworkInterface.getNetworkInterfaces()
         while (available != null && available.hasMoreElements()) {
             val systemInterface = available.nextElement()
-            val boxInterface = NetworkInterface()
-            boxInterface.name = systemInterface.name
+            val boxInterface    = NetworkInterface()
+            boxInterface.name  = systemInterface.name
             boxInterface.index = systemInterface.index
-            boxInterface.mtu = runCatching { systemInterface.mtu }.getOrDefault(1500)
-            val capabilities = networkDetails[systemInterface.name]?.second
-            boxInterface.type = when {
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> Libbox.InterfaceTypeWIFI
+            boxInterface.mtu   = runCatching { systemInterface.mtu }.getOrDefault(1500)
+            val capabilities   = networkDetails[systemInterface.name]?.second
+            boxInterface.type  = when {
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)     == true -> Libbox.InterfaceTypeWIFI
                 capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> Libbox.InterfaceTypeCellular
                 capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> Libbox.InterfaceTypeEthernet
-                systemInterface.name.startsWith("wlan") -> Libbox.InterfaceTypeWIFI
+                systemInterface.name.startsWith("wlan")  -> Libbox.InterfaceTypeWIFI
                 systemInterface.name.startsWith("rmnet") -> Libbox.InterfaceTypeCellular
-                systemInterface.name.startsWith("eth") -> Libbox.InterfaceTypeEthernet
+                systemInterface.name.startsWith("eth")   -> Libbox.InterfaceTypeEthernet
                 else -> Libbox.InterfaceTypeOther
             }
-            boxInterface.flags = if (systemInterface.isUp) 0x1 or 0x40 else 0
+            boxInterface.flags   = if (systemInterface.isUp) 0x1 or 0x40 else 0
             boxInterface.metered = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
             val addresses = systemInterface.interfaceAddresses.mapNotNull { item ->
                 val address = item.address
-                val host = if (address is Inet6Address) address.hostAddress.substringBefore('%') else address.hostAddress
+                val host = if (address is Inet6Address)
+                    address.hostAddress.substringBefore('%')
+                else
+                    address.hostAddress
                 if (host.isNullOrBlank()) null else "$host/" + item.networkPrefixLength
             }
-            boxInterface.addresses = StringValues(addresses)
-            boxInterface.dnsServer = StringValues(networkDetails[systemInterface.name]?.first.orEmpty())
+            boxInterface.addresses  = StringValues(addresses)
+            boxInterface.dnsServer  = StringValues(networkDetails[systemInterface.name]?.first.orEmpty())
             interfaces.add(boxInterface)
         }
         return NetworkInterfaces(interfaces.iterator())
@@ -401,17 +403,83 @@ class OnyxVpnService : VpnService(), PlatformInterface {
 
     override fun readWIFIState(): WIFIState? = null
 
+    // ── v5 new abstract stubs — features not needed by OnyxVPN ───────────────
+
+    /** Tailscale hostname — not used */
+    override fun tailscaleHostname(): String = ""
+
+    /** Whether to use platform auto-redirect (Tailscale/TUN-based) — false = use sing-box built-in */
+    override fun usePlatformAutoRedirect(): Boolean = false
+
+    /** Whether to use platform bridge — false = not implemented */
+    override fun usePlatformBridge(): Boolean = false
+
+    /** Whether to use platform shell — false = not implemented */
+    override fun usePlatformShell(): Boolean = false
+
+    /** Create auto-redirect session — not used (usePlatformAutoRedirect=false) */
+    override fun createAutoRedirect(
+        options: ByteArray?,
+        handler: com.hiddify.core.libbox.AutoRedirectHandler?
+    ): com.hiddify.core.libbox.AutoRedirectSession? = null
+
+    /** Create bridge session — not used (usePlatformBridge=false) */
+    override fun createBridge(
+        options: com.hiddify.core.libbox.BridgeOptions?
+    ): com.hiddify.core.libbox.BridgeSession? = null
+
+    /** Open shell session — not used (usePlatformShell=false) */
+    override fun openShellSession(
+        user: com.hiddify.core.libbox.PlatformUser?,
+        command: String?,
+        environ: StringIterator?,
+        term: String?,
+        rows: Int,
+        cols: Int
+    ): com.hiddify.core.libbox.ShellSession? = null
+
+    /** Check platform shell availability — no-op */
+    override fun checkPlatformShell() {}
+
+    /** Look up SFTP server — not used */
+    override fun lookupSFTPServer(): com.hiddify.core.libbox.StringBox? = null
+
+    /** Look up platform user — not used */
+    override fun lookupUser(username: String?): com.hiddify.core.libbox.PlatformUser? = null
+
+    /** Read system SSH host key — not used */
+    override fun readSystemSSHHostKey(): com.hiddify.core.libbox.StringBox? = null
+
+    /** Register network interface name — no-op */
+    override fun registerMyInterface(name: String?) {}
+
+    /** Cancel notification by identifier — no-op (we manage our own notifications) */
+    override fun cancelNotification(identifier: String?, typeID: Int) {}
+
+    /** Start neighbor monitor — no-op (not needed on Android) */
+    override fun startNeighborMonitor(
+        listener: com.hiddify.core.libbox.NeighborUpdateListener?
+    ) {}
+
+    /** Close neighbor monitor — no-op */
+    override fun closeNeighborMonitor(
+        listener: com.hiddify.core.libbox.NeighborUpdateListener?
+    ) {}
+
+    // ── Helpers ───────────────────────────────────────────────
     private class StringValues(private val values: List<String>) : StringIterator {
         private var index = 0
         override fun hasNext() = index < values.size
-        override fun next() = values[index++]
-        override fun len() = values.size
+        override fun next()    = values[index++]
+        override fun len()     = values.size
     }
 
     private class NetworkInterfaces(private val values: Iterator<NetworkInterface>) : NetworkInterfaceIterator {
         override fun hasNext() = values.hasNext()
-        override fun next() = values.next()
+        override fun next()    = values.next()
     }
+
+    // ── Notification ──────────────────────────────────────────
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val ch = NotificationChannel(CHANNEL_ID, "OnyxVPN Status", NotificationManager.IMPORTANCE_LOW).apply {
