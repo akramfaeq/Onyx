@@ -225,8 +225,12 @@ class SingboxProvider extends ChangeNotifier {
       );
 
     } else if (s == 'disconnected') {
-      if (_state == VpnState.connecting) {
-        debugPrint('_onNativeStatus: ignoring stale "disconnected" — already connecting');
+      // FIX: لا نتجاهل "disconnected" أثناء connecting —
+      // لو OnyxVpnService فشل وأرسل "disconnected" (بعد failed)
+      // نحتاج نعالجه وإلا التطبيق يظل عالقاً في "Connecting..."
+      // الاستثناء الوحيد: لو جاء "failed" أولاً وبدأنا fallback بالفعل
+      if (_state == VpnState.connecting && _fallbackIndex > 0) {
+        debugPrint('_onNativeStatus: ignoring stale "disconnected" — fallback in progress');
         return;
       }
 
