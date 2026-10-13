@@ -1,509 +1,1005 @@
-package com.onyxvpn.onyx_vpn
+// --- Sing-box Config Builder ----------------------------------
+// يبني config JSON لـ sing-box حسب الـ mode
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.content.Intent
-import java.io.File
-import android.net.VpnService
-import android.net.TrafficStats
-import android.os.Build
-import android.os.IBinder
-import android.os.ParcelFileDescriptor
-import android.util.Log
-import android.util.Base64
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import java.net.InetSocketAddress
-import java.net.Inet6Address
-import java.net.NetworkInterface as JavaNetworkInterface
-import java.security.KeyStore
-import androidx.core.app.NotificationCompat
-import com.hiddify.core.libbox.Libbox
-import com.hiddify.core.libbox.ConnectionOwner
-import com.hiddify.core.libbox.LocalDNSTransport
-import com.hiddify.core.mobile.Mobile
-import com.hiddify.core.libbox.PlatformInterface
-import com.hiddify.core.libbox.TunOptions
-import com.hiddify.core.libbox.InterfaceUpdateListener
-import com.hiddify.core.libbox.NetworkInterfaceIterator
-import com.hiddify.core.libbox.NetworkInterface
-import com.hiddify.core.libbox.StringIterator
-import com.hiddify.core.libbox.WIFIState
-import com.hiddify.core.libbox.Notification as CoreNotification
-import kotlinx.coroutines.*
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.ConcurrentHashMap
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'warp_service.dart';
+import 'mahsa_service.dart';
+import 'server_probe.dart';
 
-class OnyxVpnService : VpnService(), PlatformInterface {
+// --- VpnServer model ------------------------------------------
+class VpnServer {
+  final String  name;
+  final String  link;                        // v2ray link (ss:// vless:// ...)
+  final Map<String, dynamic>? rawOutbound;  // sing-box outbound مباشر
 
-    companion object {
-        const val TAG          = "OnyxVpnService"
-        const val ACTION_START = "com.onyxvpn.START"
-        const val ACTION_STOP  = "com.onyxvpn.STOP"
-        const val EXTRA_WARP_OVER_PROXY = "warp_over_proxy"
-        const val NOTIF_ID     = 100
-        const val CHANNEL_ID   = "onyx_vpn"
+  // بيانات العرض (من servers.json)
+  final int    ping;
+  final String quality;
+  final String flag;
+  final String country;
 
-        @Volatile var instance: OnyxVpnService? = null
-        @Volatile var isRunning = false
-        val starting = AtomicBoolean(false)
+  const VpnServer({
+    required this.name,
+    required this.link,
+    this.rawOutbound,
+    this.ping    = 0,
+    this.quality = '',
+    this.flag    = '🌐',
+    this.country = '',
+  });
+}
+
+class V2RayConfigs {
+
+  // --- DNS --------------------------------------------------
+  // FIX: متوافق مع hiddify-core القديم — بدون type:hosts أو predefined أو static_ips
+  static Map<String, dynamic> _dns({bool blockAds = true}) => {
+    'servers': [
+      // dns-remote: DoH عبر Cloudflare — يسير عبر proxy
+      {
+        'tag':             'dns-remote',
+        'type':            'https',
+        'server':          '1.1.1.1',
+        'path':            '/dns-query',
+        'strategy':        'ipv4_only',
+        'domain_resolver': 'dns-local',
+        'detour':          'proxy',
+      },
+      // dns-local: DoH عبر Alibaba DNS — مباشر للمواقع المحلية
+      {
+        'tag':      'dns-local',
+        'type':     'https',
+        'server':   '223.5.5.5',
+        'path':     '/dns-query',
+        'strategy': 'ipv4_only',
+        'detour':   'direct',
+      },
+      // dns-trick: RethinkDNS لكسر الحجب
+      {
+        'tag':    'dns-trick',
+        'type':   'https',
+        'server': 'sky.rethinkdns.com',
+        'path':   '/1:-Pf_____9_78YAA8AJ4BmAEA=',
+        'detour': 'direct-fragment',
+        'domain_resolver': 'dns-local',
+      },
+    ],
+    'rules': [
+      {'clash_mode': 'global', 'server': 'dns-remote'},
+      {'clash_mode': 'direct', 'server': 'dns-local'},
+      {
+        'domain': ['sky.rethinkdns.com'],
+        'server': 'dns-trick',
+      },
+      if (blockAds) {
+        'geosite':       ['category-ads-all', 'malware', 'phishing'],
+        'action':        'predefined',
+        'rcode':         'success',
+        'disable_cache': true,
+      }
+    ],
+    'final':             'dns-remote',
+    'independent_cache': true,
+    'strategy':          'ipv4_only',
+  };
+
+  // --- Inbounds (TUN) ---------------------------------------
+  static List<Map<String, dynamic>> _inbounds({List<String> excluded = const []}) => [
+    {
+      'type': 'tun',
+      'tag':  'tun-in',
+      // v5: inet4_address + inet6_address → address (مصفوفة مجمعة)
+      'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+      'mtu':          1500,
+      'auto_route':   true,
+      'strict_route': true,
+      // v5: sniff ينتقل إلى route rules — لا يوجد هنا
+      if (excluded.isNotEmpty) 'excluded_packages': excluded,
+    }
+  ];
+
+  // --- Route ------------------------------------------------
+  // FIX: استخدم geoip/geosite المدمجة في hiddify-core بدل remote rule sets
+  // remote rule sets تحتاج اتصال بـ GitHub عند أول تشغيل → تسبب الانقطاع
+  static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
+    'rules': [
+      // v5: 'dns' outbound → action: hijack-dns  +  sniff انتقل من inbound إلى هنا
+      {'action': 'sniff'},
+      {'protocol': 'dns', 'action': 'hijack-dns'},
+      {'ip_is_private': true, 'outbound': 'direct'},
+      if (blockAds) ...[
+        // v5: 'block' outbound → action: reject
+        {'geosite': ['malware'],          'action': 'reject'},
+        {'geosite': ['phishing'],         'action': 'reject'},
+        {'geosite': ['category-ads-all'], 'action': 'reject'},
+      ],
+      {'geoip':   [cc.toLowerCase()], 'outbound': 'direct'},
+      {'geosite': [cc.toLowerCase()], 'outbound': 'direct'},
+    ],
+    'final':                 'proxy',
+    'auto_detect_interface': true,
+    'override_android_vpn':  true,
+  };
+
+  static List<Map<String, dynamic>> _base() => [
+    {'type': 'direct', 'tag': 'direct'},
+    {
+      'type': 'direct',
+      'tag':  'direct-fragment',
+      'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'},
+    },
+    // v5: block و dns-out أصبحوا rule actions — لا نضيفهم كـ outbounds
+  ];
+
+  // ------------------------------------------------------------
+  // ✅ WARP — WireGuard عبر Cloudflare
+  // ------------------------------------------------------------
+  static Future<String> warp({
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+    bool forceNewKeys = false,
+  }) async {
+    final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
+    if (keys == null) throw StateError('WARP registration failed. Check your internet connection and try again.');
+    final privateKey = keys.privateKey;
+    final peerPub = keys.peerPublicKey;
+    final reserved = keys.reserved;
+    final v4 = keys.v4Address;
+    final v6 = keys.v6Address;
+
+    Map<String, dynamic> wg(String tag, int port) => {
+      'type':            'wireguard',
+      'tag':             tag,
+      'server':          'engage.cloudflareclient.com',
+      'server_port':     port,
+      'local_address':   ['$v4/32', '$v6/128'],
+      'private_key':     privateKey,
+      'peer_public_key': peerPub,
+      'reserved':        reserved,
+      'mtu':             1280,
+    };
+
+    return jsonEncode({
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
+      'inbounds': _inbounds(excluded: excludedApps),
+      'outbounds': [
+        // urltest — يختار المنفذ الأسرع تلقائياً (نفس طريقة هايدفاي)
+        {
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
+        },
+        wg('warp-2408', 2408),
+        wg('warp-500',  500),
+        wg('warp-1701', 1701),
+        wg('warp-4500', 4500),
+        ..._base(),
+      ],
+      'route': _route(cc: countryCode, blockAds: blockAds),
+    });
+  }
+
+  // ------------------------------------------------------------
+  // ✅ PSIPHON — native outbound مدمج في hiddify-core.aar
+  // ------------------------------------------------------------
+  static Future<String> psiphon({
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    return jsonEncode({
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
+      'inbounds': _inbounds(excluded: excludedApps),
+      'outbounds': [
+        {
+          'type': 'psiphon',
+          'tag':  'proxy',
+        },
+        ..._base(),
+      ],
+      'route': _route(cc: countryCode, blockAds: blockAds),
+    });
+  }
+
+  // ------------------------------------------------------------
+  // ✅ WARP via PSIPHON
+  // المنهجية: Psiphon يتصل أولاً → WARP يمشي من فوقه
+  //
+  // الكور (hiddify-core v4.x) يحتاج:
+  //   1. كونفيغ فيه WARP WireGuard outbounds (نفس warp() العادي)
+  //   2. parameter منفصل 'warpOverProxy: true' عبر MethodChannel
+  //      → الكور يضيف Psiphon كـ detour تحت WireGuard تلقائياً
+  //
+  // لو أرسلنا Psiphon فقط بدون WARP keys → الكور ما يعرف يربط الاتصال
+  // ------------------------------------------------------------
+  static Future<String> warpViaPsiphon({
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+    bool forceNewKeys = false,
+  }) async {
+    // نحتاج WARP keys — الكور يستخدمها مع Psiphon كـ detour
+    final keys = await WarpService.getKeys(forceRefresh: forceNewKeys);
+    if (keys == null) {
+      // fallback: Psiphon وحده لو ما حصلنا على keys
+      print('warpViaPsiphon: no WARP keys, falling back to Psiphon only');
+      return jsonEncode({
+        'log':      {'level': 'warn'},
+        'dns':      _dns(blockAds: blockAds),
+        'inbounds': _inbounds(excluded: excludedApps),
+        'outbounds': [
+          {'type': 'psiphon', 'tag': 'proxy'},
+          ..._base(),
+        ],
+        'route': _route(cc: countryCode, blockAds: blockAds),
+      });
     }
 
-    private val scope  = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    private val vpnOperationMutex = Mutex()
-    private var tunFd: ParcelFileDescriptor? = null
-    private var lastRxBytes = -1L
-    private var lastTxBytes = -1L
-    private var lastStatsAt = 0L
-    private val interfaceCallbacks = ConcurrentHashMap<InterfaceUpdateListener, ConnectivityManager.NetworkCallback>()
+    final privateKey = keys.privateKey;
+    final peerPub    = keys.peerPublicKey;
+    final reserved   = keys.reserved;
+    final v4         = keys.v4Address;
+    final v6         = keys.v6Address;
 
-    // ─── Lifecycle ────────────────────────────────────────────
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-        OnyxCore.init(this)
-        createNotificationChannel()
-        Log.d(TAG, "service created")
+    // FIX: نضيف 'detour': 'psiphon-out' صراحةً في كل WireGuard outbound
+    // الكور يحتاج يشوفه في الـ config نفسه — warpOverProxy وحده ما يكفي
+    Map<String, dynamic> wg(String tag, int port) => {
+      'type':            'wireguard',
+      'tag':             tag,
+      'server':          'engage.cloudflareclient.com',
+      'server_port':     port,
+      'local_address':   ['$v4/32', '$v6/128'],
+      'private_key':     privateKey,
+      'peer_public_key': peerPub,
+      'reserved':        reserved,
+      'mtu':             1280,
+      'detour':          'psiphon-out',  // FIX: WARP يمشي عبر Psiphon
+    };
+
+    return jsonEncode({
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
+      'inbounds': _inbounds(excluded: excludedApps),
+      'outbounds': [
+        // urltest — يختار المنفذ الأسرع تلقائياً (نفس طريقة هايدفاي)
+        {
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  ['warp-2408', 'warp-500', 'warp-1701', 'warp-4500'],
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
+        },
+        wg('warp-2408', 2408),
+        wg('warp-500',  500),
+        wg('warp-1701', 1701),
+        wg('warp-4500', 4500),
+        {'type': 'psiphon', 'tag': 'psiphon-out'},
+        ..._base(),
+      ],
+      'route': _route(cc: countryCode, blockAds: blockAds),
+    });
+  }
+
+  // ------------------------------------------------------------
+  // ✅ MAHSA — سيرفرات من GitHub
+  // ------------------------------------------------------------
+  static Future<String?> mahsa({
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    // ─── هايدفاي: probe أولاً، اتصل بالأفضل ───────────────────
+    final links = await MahsaService.getProbed();
+    if (links.isEmpty) return null;
+
+    final outbounds = <Map<String, dynamic>>[];
+    for (final link in links) {
+      final o = _parseLink(link);
+      if (o != null) outbounds.add(o);
+    }
+    if (outbounds.isEmpty) return null;
+
+    return _buildFromOutbounds(
+      outbounds: outbounds,
+      countryCode: countryCode,
+      excludedApps: excludedApps,
+      blockAds: blockAds,
+    );
+  }
+
+  // ------------------------------------------------------------
+  // ✅ CUSTOM — subscription URL
+  // ------------------------------------------------------------
+  static Future<String?> custom({
+    required String url,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    try {
+      final res = await http
+          .get(Uri.parse(url), headers: {'User-Agent': 'sing-box/1.0'})
+          .timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return null;
+
+      final body = res.body.trim();
+      if (body.startsWith('{')) {
+        final servers = _serversFromSingboxJson(body);
+        final outbounds = servers
+            .where((server) => server.rawOutbound != null)
+            .map((server) => server.rawOutbound!)
+            .take(20)
+            .toList();
+        if (outbounds.isEmpty) return null;
+        return _buildFromOutbounds(
+          outbounds: outbounds,
+          countryCode: countryCode,
+          excludedApps: excludedApps,
+          blockAds: blockAds,
+        );
+      }
+
+      final links = _extractSubscriptionLinks(body);
+      if (links.isEmpty) return null;
+
+      final outbounds = <Map<String, dynamic>>[];
+      for (final link in links) {
+        final o = _parseLink(link);
+        if (o != null) outbounds.add(o);
+        if (outbounds.length >= 20) break;
+      }
+      if (outbounds.isEmpty) return null;
+
+      return _buildFromOutbounds(
+        outbounds: outbounds,
+        countryCode: countryCode,
+        excludedApps: excludedApps,
+        blockAds: blockAds,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // ✅ PARSE SUBSCRIPTION
+  // ------------------------------------------------------------
+  static Future<List<VpnServer>> parseSubscription(String url) async {
+    try {
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent':    'hiddify/2.0 (sing-box compatible)',
+          'Accept':        'application/json, text/plain, */*',
+          'Cache-Control': 'no-cache',
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (res.statusCode != 200) return [];
+
+      final body = res.body.trim();
+      if (body.isEmpty) return [];
+
+      if (body.startsWith('{')) {
+        return _serversFromSingboxJson(body);
+      }
+
+      final links = _extractSubscriptionLinks(body);
+
+      return links.map((link) {
+        final uri  = Uri.tryParse(link);
+        final name = (uri?.fragment.isNotEmpty == true)
+            ? Uri.decodeComponent(uri!.fragment)
+            : '${uri?.scheme.toUpperCase() ?? 'SERVER'} · ${uri?.host ?? 'Server'}';
+        final countryInfo = _extractCountryFromName(name);
+        return VpnServer(
+          name:    name,
+          link:    link,
+          flag:    countryInfo.$1,
+          country: countryInfo.$2,
+        );
+      }).toList();
+
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // --- Country / Flag extractor from server name -----------
+  static (String, String) _extractCountryFromName(String name) {
+    final lower = name.toLowerCase();
+    const map = <String, (String, String)>{
+      'afghanistan':    ('🇦🇫', 'Afghanistan'),
+      'albania':        ('🇦🇱', 'Albania'),
+      'algeria':        ('🇩🇿', 'Algeria'),
+      'argentina':      ('🇦🇷', 'Argentina'),
+      'armenia':        ('🇦🇲', 'Armenia'),
+      'australia':      ('🇦🇺', 'Australia'),
+      'austria':        ('🇦🇹', 'Austria'),
+      'azerbaijan':     ('🇦🇿', 'Azerbaijan'),
+      'bahrain':        ('🇧🇭', 'Bahrain'),
+      'bangladesh':     ('🇧🇩', 'Bangladesh'),
+      'belarus':        ('🇧🇾', 'Belarus'),
+      'belgium':        ('🇧🇪', 'Belgium'),
+      'brazil':         ('🇧🇷', 'Brazil'),
+      'bulgaria':       ('🇧🇬', 'Bulgaria'),
+      'cambodia':       ('🇰🇭', 'Cambodia'),
+      'canada':         ('🇨🇦', 'Canada'),
+      'chile':          ('🇨🇱', 'Chile'),
+      'china':          ('🇨🇳', 'China'),
+      'colombia':       ('🇨🇴', 'Colombia'),
+      'croatia':        ('🇭🇷', 'Croatia'),
+      'cyprus':         ('🇨🇾', 'Cyprus'),
+      'czech':          ('🇨🇿', 'Czech'),
+      'denmark':        ('🇩🇰', 'Denmark'),
+      'egypt':          ('🇪🇬', 'Egypt'),
+      'estonia':        ('🇪🇪', 'Estonia'),
+      'finland':        ('🇫🇮', 'Finland'),
+      'france':         ('🇫🇷', 'France'),
+      'georgia':        ('🇬🇪', 'Georgia'),
+      'germany':        ('🇩🇪', 'Germany'),
+      'greece':         ('🇬🇷', 'Greece'),
+      'hong kong':      ('🇭🇰', 'Hong Kong'),
+      'hungary':        ('🇭🇺', 'Hungary'),
+      'india':          ('🇮🇳', 'India'),
+      'indonesia':      ('🇮🇩', 'Indonesia'),
+      'iran':           ('🇮🇷', 'Iran'),
+      'iraq':           ('🇮🇶', 'Iraq'),
+      'ireland':        ('🇮🇪', 'Ireland'),
+      'israel':         ('🇮🇱', 'Israel'),
+      'italy':          ('🇮🇹', 'Italy'),
+      'japan':          ('🇯🇵', 'Japan'),
+      'jordan':         ('🇯🇴', 'Jordan'),
+      'kazakhstan':     ('🇰🇿', 'Kazakhstan'),
+      'kuwait':         ('🇰🇼', 'Kuwait'),
+      'latvia':         ('🇱🇻', 'Latvia'),
+      'lebanon':        ('🇱🇧', 'Lebanon'),
+      'lithuania':      ('🇱🇹', 'Lithuania'),
+      'luxembourg':     ('🇱🇺', 'Luxembourg'),
+      'malaysia':       ('🇲🇾', 'Malaysia'),
+      'mexico':         ('🇲🇽', 'Mexico'),
+      'moldova':        ('🇲🇩', 'Moldova'),
+      'mongolia':       ('🇲🇳', 'Mongolia'),
+      'morocco':        ('🇲🇦', 'Morocco'),
+      'netherlands':    ('🇳🇱', 'Netherlands'),
+      'new zealand':    ('🇳🇿', 'New Zealand'),
+      'nigeria':        ('🇳🇬', 'Nigeria'),
+      'norway':         ('🇳🇴', 'Norway'),
+      'oman':           ('🇴🇲', 'Oman'),
+      'pakistan':       ('🇵🇰', 'Pakistan'),
+      'palestine':      ('🇵🇸', 'Palestine'),
+      'philippines':    ('🇵🇭', 'Philippines'),
+      'poland':         ('🇵🇱', 'Poland'),
+      'portugal':       ('🇵🇹', 'Portugal'),
+      'qatar':          ('🇶🇦', 'Qatar'),
+      'romania':        ('🇷🇴', 'Romania'),
+      'russia':         ('🇷🇺', 'Russia'),
+      'saudi':          ('🇸🇦', 'Saudi Arabia'),
+      'serbia':         ('🇷🇸', 'Serbia'),
+      'singapore':      ('🇸🇬', 'Singapore'),
+      'slovakia':       ('🇸🇰', 'Slovakia'),
+      'south africa':   ('🇿🇦', 'South Africa'),
+      'south korea':    ('🇰🇷', 'South Korea'),
+      'spain':          ('🇪🇸', 'Spain'),
+      'sweden':         ('🇸🇪', 'Sweden'),
+      'switzerland':    ('🇨🇭', 'Switzerland'),
+      'syria':          ('🇸🇾', 'Syria'),
+      'taiwan':         ('🇹🇼', 'Taiwan'),
+      'thailand':       ('🇹🇭', 'Thailand'),
+      'tunisia':        ('🇹🇳', 'Tunisia'),
+      'turkey':         ('🇹🇷', 'Turkey'),
+      'turkiye':        ('🇹🇷', 'Turkey'),
+      'ukraine':        ('🇺🇦', 'Ukraine'),
+      'united arab':    ('🇦🇪', 'UAE'),
+      'uae':            ('🇦🇪', 'UAE'),
+      'united kingdom': ('🇬🇧', 'UK'),
+      'united states':  ('🇺🇸', 'USA'),
+      'uzbekistan':     ('🇺🇿', 'Uzbekistan'),
+      'venezuela':      ('🇻🇪', 'Venezuela'),
+      'vietnam':        ('🇻🇳', 'Vietnam'),
+      'yemen':          ('🇾🇪', 'Yemen'),
+      ' af ':  ('🇦🇫', 'Afghanistan'),
+      ' al ':  ('🇦🇱', 'Albania'),
+      ' am ':  ('🇦🇲', 'Armenia'),
+      ' at ':  ('🇦🇹', 'Austria'),
+      ' au ':  ('🇦🇺', 'Australia'),
+      ' az ':  ('🇦🇿', 'Azerbaijan'),
+      ' be ':  ('🇧🇪', 'Belgium'),
+      ' bg ':  ('🇧🇬', 'Bulgaria'),
+      ' br ':  ('🇧🇷', 'Brazil'),
+      ' by ':  ('🇧🇾', 'Belarus'),
+      ' ca ':  ('🇨🇦', 'Canada'),
+      ' ch ':  ('🇨🇭', 'Switzerland'),
+      ' cn ':  ('🇨🇳', 'China'),
+      ' cy ':  ('🇨🇾', 'Cyprus'),
+      ' cz ':  ('🇨🇿', 'Czech'),
+      ' de ':  ('🇩🇪', 'Germany'),
+      ' dk ':  ('🇩🇰', 'Denmark'),
+      ' ee ':  ('🇪🇪', 'Estonia'),
+      ' eg ':  ('🇪🇬', 'Egypt'),
+      ' es ':  ('🇪🇸', 'Spain'),
+      ' fi ':  ('🇫🇮', 'Finland'),
+      ' fr ':  ('🇫🇷', 'France'),
+      ' gb ':  ('🇬🇧', 'UK'),
+      ' ge ':  ('🇬🇪', 'Georgia'),
+      ' gr ':  ('🇬🇷', 'Greece'),
+      ' hk ':  ('🇭🇰', 'Hong Kong'),
+      ' hr ':  ('🇭🇷', 'Croatia'),
+      ' hu ':  ('🇭🇺', 'Hungary'),
+      ' id ':  ('🇮🇩', 'Indonesia'),
+      ' ie ':  ('🇮🇪', 'Ireland'),
+      ' il ':  ('🇮🇱', 'Israel'),
+      ' in ':  ('🇮🇳', 'India'),
+      ' iq ':  ('🇮🇶', 'Iraq'),
+      ' ir ':  ('🇮🇷', 'Iran'),
+      ' it ':  ('🇮🇹', 'Italy'),
+      ' jo ':  ('🇯🇴', 'Jordan'),
+      ' jp ':  ('🇯🇵', 'Japan'),
+      ' kr ':  ('🇰🇷', 'South Korea'),
+      ' kw ':  ('🇰🇼', 'Kuwait'),
+      ' kz ':  ('🇰🇿', 'Kazakhstan'),
+      ' lb ':  ('🇱🇧', 'Lebanon'),
+      ' lt ':  ('🇱🇹', 'Lithuania'),
+      ' lu ':  ('🇱🇺', 'Luxembourg'),
+      ' lv ':  ('🇱🇻', 'Latvia'),
+      ' ma ':  ('🇲🇦', 'Morocco'),
+      ' md ':  ('🇲🇩', 'Moldova'),
+      ' mx ':  ('🇲🇽', 'Mexico'),
+      ' my ':  ('🇲🇾', 'Malaysia'),
+      ' ng ':  ('🇳🇬', 'Nigeria'),
+      ' nl ':  ('🇳🇱', 'Netherlands'),
+      ' no ':  ('🇳🇴', 'Norway'),
+      ' nz ':  ('🇳🇿', 'New Zealand'),
+      ' om ':  ('🇴🇲', 'Oman'),
+      ' ph ':  ('🇵🇭', 'Philippines'),
+      ' pk ':  ('🇵🇰', 'Pakistan'),
+      ' pl ':  ('🇵🇱', 'Poland'),
+      ' ps ':  ('🇵🇸', 'Palestine'),
+      ' pt ':  ('🇵🇹', 'Portugal'),
+      ' qa ':  ('🇶🇦', 'Qatar'),
+      ' ro ':  ('🇷🇴', 'Romania'),
+      ' rs ':  ('🇷🇸', 'Serbia'),
+      ' ru ':  ('🇷🇺', 'Russia'),
+      ' sa ':  ('🇸🇦', 'Saudi Arabia'),
+      ' se ':  ('🇸🇪', 'Sweden'),
+      ' sg ':  ('🇸🇬', 'Singapore'),
+      ' sk ':  ('🇸🇰', 'Slovakia'),
+      ' sy ':  ('🇸🇾', 'Syria'),
+      ' th ':  ('🇹🇭', 'Thailand'),
+      ' tn ':  ('🇹🇳', 'Tunisia'),
+      ' tr ':  ('🇹🇷', 'Turkey'),
+      ' tw ':  ('🇹🇼', 'Taiwan'),
+      ' ua ':  ('🇺🇦', 'Ukraine'),
+      ' uk ':  ('🇬🇧', 'UK'),
+      ' us ':  ('🇺🇸', 'USA'),
+      ' uz ':  ('🇺🇿', 'Uzbekistan'),
+      ' vn ':  ('🇻🇳', 'Vietnam'),
+      ' ye ':  ('🇾🇪', 'Yemen'),
+      ' za ':  ('🇿🇦', 'South Africa'),
+    };
+
+    final padded = ' $lower ';
+    for (final entry in map.entries) {
+      if (padded.contains(entry.key)) return entry.value;
+    }
+    return ('🌐', '');
+  }
+
+  static List<VpnServer> _serversFromSingboxJson(String raw) {
+    try {
+      final config     = jsonDecode(raw) as Map<String, dynamic>;
+      final outbounds  = config['outbounds'] as List<dynamic>? ?? [];
+      final skipTypes  = {'selector', 'urltest', 'direct', 'block', 'dns'};
+      final servers    = <VpnServer>[];
+
+      for (final ob in outbounds) {
+        final m    = ob as Map<String, dynamic>;
+        final type = m['type'] as String? ?? '';
+        final tag  = m['tag']  as String? ?? '';
+        if (skipTypes.contains(type) || !_supportedOutboundTypes.contains(type)) continue;
+
+        final server = m['server'] as String? ?? '';
+        final port   = m['server_port']?.toString() ?? '';
+        if (server.isEmpty) continue;
+        final label       = tag.isNotEmpty ? tag : '$type · $server:$port';
+        final countryInfo = _extractCountryFromName(label);
+        servers.add(VpnServer(
+          name:        label,
+          link:        '',
+          rawOutbound: m,
+          flag:        countryInfo.$1,
+          country:     countryInfo.$2,
+        ));
+      }
+      return servers;
+    } catch (_) {
+      return [];
+    }
+  }
+
+  // بناء config لسيرفر واحد محدد
+  static Future<String?> buildForServer({
+    required String url,
+    required VpnServer server,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    if (server.rawOutbound != null) {
+      return _buildFromOutbounds(
+        outbounds:    [server.rawOutbound!],
+        countryCode:  countryCode,
+        excludedApps: excludedApps,
+        blockAds:     blockAds,
+      );
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            ACTION_STOP -> { scope.launch { stopVpn() }; return START_NOT_STICKY }
-            else        -> scope.launch { startVpn(intent?.getBooleanExtra(EXTRA_WARP_OVER_PROXY, false) ?: false) }
-        }
-        return START_STICKY
+    if (server.link.isNotEmpty) {
+      final ob = _parseLink(server.link);
+      if (ob == null) return null;
+      return _buildFromOutbounds(
+        outbounds:    [ob],
+        countryCode:  countryCode,
+        excludedApps: excludedApps,
+        blockAds:     blockAds,
+      );
     }
 
-    override fun onDestroy() {
-        interfaceCallbacks.keys.toList().forEach { closeDefaultInterfaceMonitor(it) }
-        instance = null
-        scope.cancel()
-        runBlocking { stopVpn() }
-        OnyxCore.closeAll()
-        super.onDestroy()
+    return custom(
+      url:          url,
+      countryCode:  countryCode,
+      excludedApps: excludedApps,
+      blockAds:     blockAds,
+    );
+  }
+
+  // --- Build from server list (GitHub JSON) -----------------
+  static Future<String?> buildFromServerList({
+    required List<VpnServer> servers,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) async {
+    final outbounds = <Map<String, dynamic>>[];
+    for (final s in servers) {
+      if (s.rawOutbound != null) {
+        outbounds.add(s.rawOutbound!);
+      } else if (s.link.isNotEmpty) {
+        final ob = _parseLink(s.link);
+        if (ob != null) outbounds.add(ob);
+      }
+      if (outbounds.length >= 12) break;
     }
+    if (outbounds.isEmpty) return null;
+    return _buildFromOutbounds(
+      outbounds:    outbounds,
+      countryCode:  countryCode,
+      excludedApps: excludedApps,
+      blockAds:     blockAds,
+    );
+  }
 
-    override fun onRevoke() { scope.launch { stopVpn() } }
-    override fun onBind(intent: Intent?): IBinder? = super.onBind(intent)
-
-    fun stopAndWait(onComplete: () -> Unit) {
-        CoroutineScope(Dispatchers.IO).launch {
-            stopVpn()
-            withContext(Dispatchers.Main) { onComplete() }
-        }
+  // --- Build from outbounds ---------------------------------
+  static String _buildFromOutbounds({
+    required List<Map<String, dynamic>> outbounds,
+    String countryCode = 'iq',
+    List<String> excludedApps = const [],
+    bool blockAds = true,
+  }) {
+    final safeOutbounds = <Map<String, dynamic>>[];
+    final usedTags = <String>{};
+    for (var i = 0; i < outbounds.length; i++) {
+      final outbound = Map<String, dynamic>.from(outbounds[i]);
+      final originalTag = outbound['tag'] as String?;
+      var tag = originalTag?.trim().isNotEmpty == true
+          ? originalTag!.trim()
+          : 'server-${i + 1}';
+      var suffix = 2;
+      while (!usedTags.add(tag)) {
+        tag = '${originalTag ?? 'server-${i + 1}'}-${suffix++}';
+      }
+      outbound['tag'] = tag;
+      safeOutbounds.add(outbound);
     }
+    if (safeOutbounds.isEmpty) {
+      throw const FormatException('No supported VPN servers were found.');
+    }
+    final tags = safeOutbounds.map((o) => o['tag'] as String).toList();
+    return jsonEncode({
+      'log':      {'level': 'warn'},
+      'dns':      _dns(blockAds: blockAds),
+      'inbounds': _inbounds(excluded: excludedApps),
+      'outbounds': [
+        // urltest — يختار السيرفر الأسرع تلقائياً (نفس طريقة هايدفاي)
+        {
+          'type':                       'urltest',
+          'tag':                        'proxy',
+          'outbounds':                  tags,
+          'url':                        'https://www.gstatic.com/generate_204',
+          'interval':                   '3m',
+          'tolerance':                  50,
+          'interrupt_exist_connections': false,
+        },
+        ...safeOutbounds,
+        ..._base(),
+      ],
+      'route': _route(cc: countryCode, blockAds: blockAds),
+    });
+  }
 
-    // ─── Start / Stop ─────────────────────────────────────────
-    private suspend fun startVpn(warpOverProxy: Boolean) = withContext(Dispatchers.IO) {
-        vpnOperationMutex.withLock {
-            if (isRunning || !starting.compareAndSet(false, true)) return@withContext
-            try {
-                showNotification("Connecting...", "OnyxVPN is starting")
+  // --- Link Parser ------------------------------------------
+  static Map<String, dynamic>? _parseLink(String link) {
+    try {
+      final normalizedLink = link.trim().replaceFirst('﻿', '');
+      final uri = Uri.parse(normalizedLink);
+      final tag = uri.fragment.isNotEmpty
+          ? Uri.decodeComponent(uri.fragment)
+          : 'srv-${link.hashCode.abs() % 9999}';
 
-                // Mobile.start() calls openTun() asynchronously via PlatformInterface.
-                // We poll until openTun() sets tunFd (max 10 seconds).
-                OnyxCore.startCore(this@OnyxVpnService, warpOverProxy)
+      if (uri.scheme == 'vless') {
+        final p = uri.queryParameters;
+        return {
+          'type':        'vless',
+          'tag':         tag,
+          'server':      uri.host,
+          'server_port': uri.port,
+          'uuid':        Uri.decodeComponent(uri.userInfo),
+          if ((p['flow'] ?? '').isNotEmpty) 'flow': p['flow'],
+          'tls': {
+            'enabled':     p['security'] == 'tls' || p['security'] == 'reality',
+            'server_name': p['sni'] ?? p['host'] ?? uri.host,
+            if (p['security'] == 'reality')
+              'reality': {
+                'enabled':    true,
+                'public_key': p['pbk'] ?? '',
+                'short_id':   p['sid'] ?? '',
+              },
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+          if (p['type'] != null && p['type'] != 'tcp')
+            'transport': _parseTransport(p),
+          'packet_encoding': 'xudp',
+        };
+      }
 
-                val deadline = System.currentTimeMillis() + 10_000L
-                while (tunFd == null && System.currentTimeMillis() < deadline) {
-                    delay(100)
-                }
+      if (uri.scheme == 'trojan') {
+        final p = uri.queryParameters;
+        return {
+          'type':        'trojan',
+          'tag':         tag,
+          'server':      uri.host,
+          'server_port': uri.port,
+          'password':    Uri.decodeComponent(uri.userInfo),
+          'tls': {
+            'enabled':     true,
+            'server_name': p['sni'] ?? uri.host,
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+          if (p['type'] != null && p['type'] != 'tcp')
+            'transport': _parseTransport(p),
+        };
+      }
 
-                if (tunFd == null) {
-                    throw IllegalStateException("Core started but TUN interface was not established within 10s")
-                }
+      if (uri.scheme == 'vmess') {
+        final raw     = normalizedLink.substring(normalizedLink.indexOf('://') + 3);
+        final padded  = raw + '=' * ((4 - raw.length % 4) % 4);
+        final decoded = jsonDecode(utf8.decode(base64.decode(padded))) as Map<String, dynamic>;
+        return {
+          'type':        'vmess',
+          'tag':         decoded['ps'] as String? ?? tag,
+          'server':      decoded['add'],
+          'server_port': int.tryParse(decoded['port'].toString()) ?? 443,
+          'uuid':        decoded['id'],
+          'security':    decoded['scy'] ?? 'auto',
+          'alter_id':    int.tryParse(decoded['aid'].toString()) ?? 0,
+          'tls': {
+            'enabled': decoded['tls'] == 'tls',
+            if ((decoded['sni'] ?? '').toString().isNotEmpty)
+              'server_name': decoded['sni'],
+            if (decoded['tls'] == 'tls')
+              'utls': {
+                'enabled': true,
+                'fingerprint': (decoded['fp'] ?? 'chrome').toString(),
+              },
+          },
+          if (decoded['net'] != null && decoded['net'] != 'tcp')
+            'transport': {
+              'type': decoded['net'],
+              if (decoded['path'] != null && decoded['path'].toString().isNotEmpty)
+                'path': decoded['path'],
+              if (decoded['host'] != null && decoded['host'].toString().isNotEmpty)
+                'headers': {'Host': decoded['host']},
+            },
+        };
+      }
 
-                lastRxBytes = TrafficStats.getUidRxBytes(android.os.Process.myUid())
-                lastTxBytes = TrafficStats.getUidTxBytes(android.os.Process.myUid())
-                lastStatsAt = android.os.SystemClock.elapsedRealtime()
+      // ✅ FIX: ss:// يدعم الصيغتين: base64 القديمة و SIP002 الجديدة
+      if (uri.scheme == 'ss') {
+        return _parseShadowsocks(uri, tag);
+      }
 
-                isRunning = true
-                showNotification("Connected", "OnyxVPN is active — tap to disconnect")
-                Log.d(TAG, "VPN started ✅")
-                OnyxChannel.sendStatus("connected")
+      if (uri.scheme == 'hysteria2' || uri.scheme == 'hy2') {
+        final p = uri.queryParameters;
+        final upMbps = int.tryParse(p['upmbps'] ?? '');
+        final downMbps = int.tryParse(p['downmbps'] ?? '');
+        final tls = <String, dynamic>{
+          'enabled': true,
+          'server_name': p['sni'] ?? uri.host,
+          if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+          if (p['alpn']?.isNotEmpty == true) 'alpn': p['alpn']!.split(','),
+          'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+        };
+        final obfs = p['obfs'];
+        return {
+          'type': 'hysteria2',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'password': Uri.decodeComponent(uri.userInfo),
+          'tls': tls,
+          if (obfs?.isNotEmpty == true)
+            'obfs': {
+              'type': obfs,
+              if (p['obfs-password']?.isNotEmpty == true)
+                'password': p['obfs-password'],
+            },
+          if (upMbps != null) 'up_mbps': upMbps,
+          if (downMbps != null) 'down_mbps': downMbps,
+        };
+      }
 
-            } catch (e: Exception) {
-                Log.e(TAG, "startVpn error: ${e.message}")
-                OnyxChannel.sendStatus("failed:${e.message}")
-                runCatching { OnyxCore.stopCore() }
-                tunFd?.close()
-                tunFd = null
-                isRunning = false
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            } finally {
-                starting.set(false)
+      if (uri.scheme == 'tuic') {
+        final p = uri.queryParameters;
+        final credentials = Uri.decodeComponent(uri.userInfo).split(':');
+        if (credentials.length < 2) return null;
+        return {
+          'type': 'tuic',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'uuid': credentials.first,
+          'password': credentials.skip(1).join(':'),
+          'congestion_control': p['congestion_control'] ?? p['cc'] ?? 'bbr',
+          'udp_relay_mode': p['udp_relay_mode'] ?? 'native',
+          'tls': {
+            'enabled': true,
+            'server_name': p['sni'] ?? uri.host,
+            if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+            'alpn': p['alpn']?.split(',') ?? ['h3'],
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+        };
+      }
+
+      if (uri.scheme == 'anytls') {
+        final p = uri.queryParameters;
+        return {
+          'type': 'anytls',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'password': Uri.decodeComponent(uri.userInfo),
+          'tls': {
+            'enabled': true,
+            'server_name': p['sni'] ?? uri.host,
+            if (p['insecure'] == '1' || p['insecure'] == 'true') 'insecure': true,
+            'utls': {'enabled': true, 'fingerprint': p['fp'] ?? 'chrome'},
+          },
+        };
+      }
+
+      if (uri.scheme == 'socks' || uri.scheme == 'socks5') {
+        final credentials = uri.userInfo.isEmpty
+            ? const <String>[]
+            : Uri.decodeComponent(uri.userInfo).split(':');
+        return {
+          'type': 'socks',
+          'tag': tag,
+          'server': uri.host,
+          'server_port': uri.port,
+          'version': '5',
+          if (credentials.isNotEmpty) 'username': credentials.first,
+          if (credentials.length > 1) 'password': credentials.skip(1).join(':'),
+        };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // ✅ FIX: parser لـ ss:// يدعم SIP002 (method:pass@host:port) + base64 القديمة
+  static Map<String, dynamic>? _parseShadowsocks(Uri uri, String tag) {
+    try {
+      // SIP002: ss://method:password@host:port
+      // userInfo يكون مباشرة method:password (مو base64)
+      if (uri.host.isNotEmpty && uri.port > 0) {
+        final userInfo = Uri.decodeComponent(uri.userInfo);
+        // لو فيه @ في الـ userInfo → base64 قديمة
+        // لو ما فيه → SIP002 مباشرة
+        if (!userInfo.contains('@')) {
+          // حاول فك base64 أول
+          try {
+            final padded  = userInfo + '=' * ((4 - userInfo.length % 4) % 4);
+            final decoded = utf8.decode(base64.decode(padded));
+            final idx = decoded.indexOf(':');
+            if (idx > 0) {
+              return {
+                'type':        'shadowsocks',
+                'tag':         tag,
+                'server':      uri.host,
+                'server_port': uri.port,
+                'method':      decoded.substring(0, idx),
+                'password':    decoded.substring(idx + 1),
+              };
             }
+          } catch (_) {}
+          // فشل base64 → SIP002 مباشرة
+          final idx = userInfo.indexOf(':');
+          if (idx > 0) {
+            return {
+              'type':        'shadowsocks',
+              'tag':         tag,
+              'server':      uri.host,
+              'server_port': uri.port,
+              'method':      userInfo.substring(0, idx),
+              'password':    userInfo.substring(idx + 1),
+            };
+          }
         }
-    }
+      }
+    } catch (_) {}
+    return null;
+  }
 
-    private suspend fun stopVpn() = withContext(Dispatchers.IO) {
-        vpnOperationMutex.withLock {
-            try { OnyxCore.stopCore() }
-            catch (e: Exception) { Log.w(TAG, "stop error: " + e.message) }
+  static Map<String, dynamic>? _parseTransport(Map<String, String> p) {
+    final type = p['type'];
+    if (type == null || type == 'tcp') return null;
+    if (type == 'ws')   return {'type': 'ws',   'path': p['path'] ?? '/', if (p['host'] != null) 'headers': {'Host': p['host']}};
+    if (type == 'grpc') return {'type': 'grpc', 'service_name': p['serviceName'] ?? ''};
+    if (type == 'h2')   return {'type': 'http', 'host': [if (p['host'] != null) p['host']!], 'path': p['path'] ?? '/'};
+    return {'type': type};
+  }
 
-            tunFd?.close()
-            tunFd    = null
-            isRunning = false
-            starting.set(false)
+  static String _tryBase64(String input) {
+    try {
+      if (!input.contains('://')) {
+        final padded  = input + '=' * ((4 - input.length % 4) % 4);
+        final decoded = utf8.decode(base64.decode(padded));
+        if (decoded.contains('://')) return decoded;
+      }
+    } catch (_) {}
+    return input;
+  }
 
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).cancel(NOTIF_ID)
-            stopForeground(STOP_FOREGROUND_REMOVE)
+  static const _supportedOutboundTypes = {
+    'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria2', 'tuic', 'anytls',
+    'socks', 'http', 'wireguard',
+  };
 
-            delay(150)
-            OnyxChannel.sendStatus("disconnected")
-            Log.d(TAG, "VPN stopped")
-        }
-    }
-
-    // ─── Stats ────────────────────────────────────────────────
-    @Synchronized
-    fun queryStats(): Pair<Long, Long> {
-        val now = android.os.SystemClock.elapsedRealtime()
-        val rx = TrafficStats.getUidRxBytes(android.os.Process.myUid())
-        val tx = TrafficStats.getUidTxBytes(android.os.Process.myUid())
-        if (rx < 0 || tx < 0 || lastRxBytes < 0 || lastTxBytes < 0 || lastStatsAt == 0L) {
-            lastRxBytes = rx; lastTxBytes = tx; lastStatsAt = now
-            return Pair(0L, 0L)
-        }
-        val elapsed = (now - lastStatsAt).coerceAtLeast(1L)
-        val down = ((rx - lastRxBytes).coerceAtLeast(0L) * 1000L) / elapsed
-        val up   = ((tx - lastTxBytes).coerceAtLeast(0L) * 1000L) / elapsed
-        lastRxBytes = rx; lastTxBytes = tx; lastStatsAt = now
-        return Pair(down, up)
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // PlatformInterface — hiddify-core v5
-    // ═══════════════════════════════════════════════════════════
-
-    override fun autoDetectInterfaceControl(fd: Int) { protect(fd) }
-
-    // ── TUN ──────────────────────────────────────────────────
-    override fun openTun(options: TunOptions): Int {
-        val builder = Builder()
-            .setSession("OnyxVPN")
-            .setMtu(options.getMTU())  // v5: getMTU()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false)
-
-        // IPv4 addresses — v5: getInet4Address()
-        val v4 = options.getInet4Address()
-        while (v4.hasNext()) { val a = v4.next(); builder.addAddress(a.address(), a.prefix()) }
-
-        // IPv6 addresses — v5: getInet6Address()
-        val v6 = options.getInet6Address()
-        while (v6.hasNext()) { val a = v6.next(); builder.addAddress(a.address(), a.prefix()) }
-
-        // Routes — v5: getAutoRoute(), getInet4RouteAddress(), getInet6RouteAddress()
-        if (options.getAutoRoute()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val r4 = options.getInet4RouteAddress()
-                var hasIpv4Route = false
-                while (r4.hasNext()) {
-                    val address = r4.next()
-                    builder.addRoute(address.address(), address.prefix())
-                    hasIpv4Route = true
-                }
-                if (!hasIpv4Route) builder.addRoute("0.0.0.0", 0)
-
-                val r6 = options.getInet6RouteAddress()
-                var hasIpv6Route = false
-                while (r6.hasNext()) {
-                    val address = r6.next()
-                    builder.addRoute(address.address(), address.prefix())
-                    hasIpv6Route = true
-                }
-                if (!hasIpv6Route) builder.addRoute("::", 0)
-            } else {
-                builder.addRoute("0.0.0.0", 0)
-                builder.addRoute("::", 0)
-            }
-        }
-
-        // DNS — v5: getDNSServerAddress() returns StringIterator (not StringBox)
-        val dnsIter = options.getDNSServerAddress()
-        while (dnsIter.hasNext()) {
-            val dns = dnsIter.next()
-            if (dns.isNotBlank()) builder.addDnsServer(dns)
-        }
-
-        // Per-app routing — v5: getIncludePackage(), getExcludePackage()
-        val includedPackages = options.getIncludePackage()
-        var hasIncludedPackages = false
-        while (includedPackages.hasNext()) {
-            val selectedPackage = includedPackages.next()
-            if (selectedPackage != this@OnyxVpnService.packageName) {
-                runCatching { builder.addAllowedApplication(selectedPackage) }
-            }
-            hasIncludedPackages = true
-        }
-        if (!hasIncludedPackages) {
-            val excluded = options.getExcludePackage()
-            while (excluded.hasNext()) {
-                runCatching { builder.addDisallowedApplication(excluded.next()) }
-            }
-            runCatching { builder.addDisallowedApplication(this@OnyxVpnService.packageName) }
-        }
-
-        val pfd = builder.establish() ?: error("VPN establish failed")
-        tunFd = pfd
-        return pfd.fd
-    }
-
-    fun closeTun() { tunFd?.close(); tunFd = null }
-
-    override fun underNetworkExtension() = false
-    override fun usePlatformAutoDetectInterfaceControl() = true
-    override fun useProcFS() = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
-    override fun includeAllNetworks() = false
-
-    // ── Connection owner — v5: no androidPackageName field; use setAndroidPackageNames() ──
-    override fun findConnectionOwner(
-        ipProtocol: Int,
-        sourceAddress: String,
-        sourcePort: Int,
-        destinationAddress: String,
-        destinationPort: Int
-    ): ConnectionOwner {
-        val uid = runCatching {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@runCatching -1
-            val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            connectivity.getConnectionOwnerUid(
-                ipProtocol,
-                InetSocketAddress(sourceAddress, sourcePort),
-                InetSocketAddress(destinationAddress, destinationPort)
-            )
-        }.getOrDefault(-1)
-        val app = if (uid >= 0) packageManager.getPackagesForUid(uid)?.firstOrNull().orEmpty() else ""
-        return ConnectionOwner().also {
-            it.userId   = uid
-            it.userName = app
-            // v5: setAndroidPackageNames() replaces the removed androidPackageName field
-            it.setAndroidPackageNames(StringValues(if (app.isNotEmpty()) listOf(app) else emptyList()))
-        }
-    }
-
-    override fun sendNotification(n: CoreNotification?) {}
-    override fun clearDNSCache() {}
-
-    // ── Interface monitor ─────────────────────────────────────
-    override fun closeDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
-        val callback = interfaceCallbacks.remove(listener) ?: return
-        val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        runCatching { connectivity.unregisterNetworkCallback(callback) }
-    }
-
-    override fun startDefaultInterfaceMonitor(listener: InterfaceUpdateListener) {
-        val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        interfaceCallbacks.remove(listener)?.let { old ->
-            runCatching { connectivity.unregisterNetworkCallback(old) }
-        }
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = publishDefaultInterface(connectivity, listener)
-            override fun onLost(network: Network)      = publishDefaultInterface(connectivity, listener)
-            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) =
-                publishDefaultInterface(connectivity, listener)
-            override fun onLinkPropertiesChanged(network: Network, linkProperties: android.net.LinkProperties) =
-                publishDefaultInterface(connectivity, listener)
-        }
-        interfaceCallbacks[listener] = callback
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            connectivity.registerDefaultNetworkCallback(callback)
-        } else {
-            connectivity.registerNetworkCallback(
-                NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
-                callback
-            )
-        }
-        publishDefaultInterface(connectivity, listener)
-    }
-
-    private fun publishDefaultInterface(
-        connectivity: ConnectivityManager,
-        listener: InterfaceUpdateListener
-    ) {
-        val network      = connectivity.activeNetwork
-        val properties   = network?.let { connectivity.getLinkProperties(it) }
-        val capabilities = network?.let { connectivity.getNetworkCapabilities(it) }
-        val name  = properties?.interfaceName.orEmpty()
-        val index = runCatching { JavaNetworkInterface.getByName(name)?.index ?: -1 }.getOrDefault(-1)
-        val metered = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
-        listener.updateDefaultInterface(name, index, metered, false)
-    }
-
-    override fun localDNSTransport(): LocalDNSTransport? = null
-
-    override fun systemCertificates(): StringIterator {
-        val certificates = mutableListOf<String>()
-        runCatching {
-            val keyStore = KeyStore.getInstance("AndroidCAStore")
-            keyStore.load(null, null)
-            val aliases = keyStore.aliases()
-            while (aliases.hasMoreElements()) {
-                val certificate = keyStore.getCertificate(aliases.nextElement()) ?: continue
-                val encoded = Base64.encodeToString(certificate.encoded, Base64.NO_WRAP)
-                certificates.add("-----BEGIN CERTIFICATE-----\n" + encoded + "\n-----END CERTIFICATE-----")
-            }
-        }.onFailure { Log.w(TAG, "Unable to load system certificates: " + it.message) }
-        return StringValues(certificates)
-    }
-
-    override fun getInterfaces(): NetworkInterfaceIterator {
-        val interfaces   = mutableListOf<NetworkInterface>()
-        val connectivity = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        val networkDetails = mutableMapOf<String, Pair<List<String>, NetworkCapabilities?>>()
-        runCatching {
-            connectivity.allNetworks.forEach { network ->
-                val properties = connectivity.getLinkProperties(network) ?: return@forEach
-                val name = properties.interfaceName ?: return@forEach
-                val dns  = properties.dnsServers.map { it.hostAddress.orEmpty().substringBefore('%') }
-                    .filter { it.isNotBlank() }
-                networkDetails[name] = dns to connectivity.getNetworkCapabilities(network)
-            }
-        }
-        val available = JavaNetworkInterface.getNetworkInterfaces()
-        while (available != null && available.hasMoreElements()) {
-            val systemInterface = available.nextElement()
-            val boxInterface    = NetworkInterface()
-            boxInterface.name  = systemInterface.name
-            boxInterface.index = systemInterface.index
-            boxInterface.mtu   = runCatching { systemInterface.mtu }.getOrDefault(1500)
-            val capabilities   = networkDetails[systemInterface.name]?.second
-            boxInterface.type  = when {
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)     == true -> Libbox.InterfaceTypeWIFI
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> Libbox.InterfaceTypeCellular
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true -> Libbox.InterfaceTypeEthernet
-                systemInterface.name.startsWith("wlan")  -> Libbox.InterfaceTypeWIFI
-                systemInterface.name.startsWith("rmnet") -> Libbox.InterfaceTypeCellular
-                systemInterface.name.startsWith("eth")   -> Libbox.InterfaceTypeEthernet
-                else -> Libbox.InterfaceTypeOther
-            }
-            boxInterface.flags   = if (systemInterface.isUp) 0x1 or 0x40 else 0
-            boxInterface.metered = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) != true
-            val addresses = systemInterface.interfaceAddresses.mapNotNull { item ->
-                val address = item.address
-                val host = if (address is Inet6Address)
-                    address.hostAddress.substringBefore('%')
-                else
-                    address.hostAddress
-                if (host.isNullOrBlank()) null else "$host/" + item.networkPrefixLength
-            }
-            boxInterface.addresses  = StringValues(addresses)
-            boxInterface.dnsServer  = StringValues(networkDetails[systemInterface.name]?.first.orEmpty())
-            interfaces.add(boxInterface)
-        }
-        return NetworkInterfaces(interfaces.iterator())
-    }
-
-    override fun readWIFIState(): WIFIState? = null
-
-    // ── v5 new abstract stubs — features not needed by OnyxVPN ───────────────
-
-    /** Tailscale hostname — not used */
-    override fun tailscaleHostname(): String = ""
-
-    /** Whether to use platform auto-redirect (Tailscale/TUN-based) — false = use sing-box built-in */
-    override fun usePlatformAutoRedirect(): Boolean = false
-
-    /** Whether to use platform bridge — false = not implemented */
-    override fun usePlatformBridge(): Boolean = false
-
-    /** Whether to use platform shell — false = not implemented */
-    override fun usePlatformShell(): Boolean = false
-
-    /** Create auto-redirect session — not used (usePlatformAutoRedirect=false) */
-    override fun createAutoRedirect(
-        options: ByteArray?,
-        handler: com.hiddify.core.libbox.AutoRedirectHandler?
-    ): com.hiddify.core.libbox.AutoRedirectSession? = null
-
-    /** Create bridge session — not used (usePlatformBridge=false) */
-    override fun createBridge(
-        options: com.hiddify.core.libbox.BridgeOptions?
-    ): com.hiddify.core.libbox.BridgeSession? = null
-
-    /** Open shell session — not used (usePlatformShell=false) */
-    override fun openShellSession(
-        user: com.hiddify.core.libbox.PlatformUser?,
-        command: String?,
-        environ: StringIterator?,
-        term: String?,
-        rows: Int,
-        cols: Int
-    ): com.hiddify.core.libbox.ShellSession? = null
-
-    /** Check platform shell availability — no-op */
-    override fun checkPlatformShell() {}
-
-    /** Look up SFTP server — not used */
-    override fun lookupSFTPServer(): com.hiddify.core.libbox.StringBox? = null
-
-    /** Look up platform user — not used */
-    override fun lookupUser(username: String?): com.hiddify.core.libbox.PlatformUser? = null
-
-    /** Read system SSH host key — not used */
-    override fun readSystemSSHHostKey(): com.hiddify.core.libbox.StringBox? = null
-
-    /** Register network interface name — no-op */
-    override fun registerMyInterface(name: String?) {}
-
-    /** Cancel notification by identifier — no-op (we manage our own notifications) */
-    override fun cancelNotification(identifier: String?, typeID: Int) {}
-
-    /** Start neighbor monitor — no-op (not needed on Android) */
-    override fun startNeighborMonitor(
-        listener: com.hiddify.core.libbox.NeighborUpdateListener?
-    ) {}
-
-    /** Close neighbor monitor — no-op */
-    override fun closeNeighborMonitor(
-        listener: com.hiddify.core.libbox.NeighborUpdateListener?
-    ) {}
-
-    // ── Helpers ───────────────────────────────────────────────
-    private class StringValues(private val values: List<String>) : StringIterator {
-        private var index = 0
-        override fun hasNext() = index < values.size
-        override fun next()    = values[index++]
-        override fun len()     = values.size
-    }
-
-    private class NetworkInterfaces(private val values: Iterator<NetworkInterface>) : NetworkInterfaceIterator {
-        override fun hasNext() = values.hasNext()
-        override fun next()    = values.next()
-    }
-
-    // ── Notification ──────────────────────────────────────────
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(CHANNEL_ID, "OnyxVPN Status", NotificationManager.IMPORTANCE_LOW).apply {
-                setShowBadge(false); enableVibration(false)
-            }
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
-        }
-    }
-
-    private fun showNotification(title: String, body: String) {
-        val stopIntent = PendingIntent.getService(
-            this, 0,
-            Intent(this, OnyxVpnService::class.java).apply { action = ACTION_STOP },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(R.drawable.ic_disconnect, "Disconnect", stopIntent)
-            .build()
-
-        startForeground(NOTIF_ID, notif)
-    }
+  static List<String> _extractSubscriptionLinks(String body) {
+    final text = _tryBase64(body.trim()).replaceFirst('﻿', '');
+    const schemes = {
+      'vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'tuic',
+      'anytls', 'socks', 'socks5',
+    };
+    return text
+        .split(RegExp(r'[\r\n]+'))
+        .map((line) => line.trim())
+        .where((line) {
+          if (line.isEmpty || line.startsWith('#') || line.startsWith('//')) return false;
+          final scheme = Uri.tryParse(line)?.scheme.toLowerCase();
+          return scheme != null && schemes.contains(scheme);
+        })
+        .toSet()
+        .toList();
+  }
 }
