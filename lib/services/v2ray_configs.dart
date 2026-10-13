@@ -36,25 +36,34 @@ class V2RayConfigs {
   // FIX: متوافق مع hiddify-core القديم — بدون type:hosts أو predefined أو static_ips
   static Map<String, dynamic> _dns({bool blockAds = true}) => {
     'servers': [
+      // dns-remote: DoH عبر Cloudflare — يسير عبر proxy
       {
-        'tag':              'dns-remote',
-        'address':          'https://1.1.1.1/dns-query',
-        'address_resolver': 'dns-local',
-        'strategy':         'ipv4_only',
-        'detour':           'proxy',
+        'tag':             'dns-remote',
+        'type':            'https',
+        'server':          '1.1.1.1',
+        'path':            '/dns-query',
+        'strategy':        'ipv4_only',
+        'domain_resolver': 'dns-local',
+        'detour':          'proxy',
       },
+      // dns-local: DoH عبر Alibaba DNS — مباشر للمواقع المحلية
       {
         'tag':      'dns-local',
-        'address':  'https://223.5.5.5/dns-query',
+        'type':     'https',
+        'server':   '223.5.5.5',
+        'path':     '/dns-query',
         'strategy': 'ipv4_only',
         'detour':   'direct',
       },
+      // dns-trick: RethinkDNS لكسر الحجب
       {
-        'tag':     'dns-trick',
-        'address': 'https://sky.rethinkdns.com/1:-Pf_____9_78YAA8AJ4BmAEA=',
-        'detour':  'direct-fragment',
+        'tag':    'dns-trick',
+        'type':   'https',
+        'server': 'sky.rethinkdns.com',
+        'path':   '/1:-Pf_____9_78YAA8AJ4BmAEA=',
+        'detour': 'direct-fragment',
+        'domain_resolver': 'dns-local',
       },
-      if (blockAds) {'tag': 'block', 'address': 'rcode://success'},
     ],
     'rules': [
       {'clash_mode': 'global', 'server': 'dns-remote'},
@@ -64,10 +73,11 @@ class V2RayConfigs {
         'server': 'dns-trick',
       },
       if (blockAds) {
-        'geosite': ['category-ads-all', 'malware', 'phishing'],
-        'server':        'block',
+        'geosite':       ['category-ads-all', 'malware', 'phishing'],
+        'action':        'predefined',
+        'rcode':         'success',
         'disable_cache': true,
-      },
+      }
     ],
     'final':             'dns-remote',
     'independent_cache': true,
@@ -77,15 +87,14 @@ class V2RayConfigs {
   // --- Inbounds (TUN) ---------------------------------------
   static List<Map<String, dynamic>> _inbounds({List<String> excluded = const []}) => [
     {
-      'type':           'tun',
-      'tag':            'tun-in',
-      'inet4_address':  '172.19.0.1/30',
-      'inet6_address':  'fdfe:dcba:9876::1/126',
-      'mtu':            1500,
-      'auto_route':     true,
-      'strict_route':   true,
-      'sniff':          true,
-      'sniff_override_destination': false,
+      'type': 'tun',
+      'tag':  'tun-in',
+      // v5: inet4_address + inet6_address → address (مصفوفة مجمعة)
+      'address': ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+      'mtu':          1500,
+      'auto_route':   true,
+      'strict_route': true,
+      // v5: sniff ينتقل إلى route rules — لا يوجد هنا
       if (excluded.isNotEmpty) 'excluded_packages': excluded,
     }
   ];
@@ -95,15 +104,18 @@ class V2RayConfigs {
   // remote rule sets تحتاج اتصال بـ GitHub عند أول تشغيل → تسبب الانقطاع
   static Map<String, dynamic> _route({required String cc, bool blockAds = true}) => {
     'rules': [
-      {'protocol': 'dns',         'outbound': 'dns-out'},
-      {'ip_is_private': true,     'outbound': 'direct'},
+      // v5: 'dns' outbound → action: hijack-dns  +  sniff انتقل من inbound إلى هنا
+      {'action': 'sniff'},
+      {'protocol': 'dns', 'action': 'hijack-dns'},
+      {'ip_is_private': true, 'outbound': 'direct'},
       if (blockAds) ...[
-        {'geosite': ['malware'],           'outbound': 'block'},
-        {'geosite': ['phishing'],          'outbound': 'block'},
-        {'geosite': ['category-ads-all'],  'outbound': 'block'},
+        // v5: 'block' outbound → action: reject
+        {'geosite': ['malware'],          'action': 'reject'},
+        {'geosite': ['phishing'],         'action': 'reject'},
+        {'geosite': ['category-ads-all'], 'action': 'reject'},
       ],
-      {'geoip':    [cc.toLowerCase()],     'outbound': 'direct'},
-      {'geosite':  [cc.toLowerCase()],     'outbound': 'direct'},
+      {'geoip':   [cc.toLowerCase()], 'outbound': 'direct'},
+      {'geosite': [cc.toLowerCase()], 'outbound': 'direct'},
     ],
     'final':                 'proxy',
     'auto_detect_interface': true,
@@ -112,10 +124,12 @@ class V2RayConfigs {
 
   static List<Map<String, dynamic>> _base() => [
     {'type': 'direct', 'tag': 'direct'},
-    {'type': 'direct', 'tag': 'direct-fragment',
-      'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'}},
-    {'type': 'block',  'tag': 'block'},
-    {'type': 'dns',    'tag': 'dns-out'},  // FIX: dns outbound الكلاسيكي للكور القديم
+    {
+      'type': 'direct',
+      'tag':  'direct-fragment',
+      'tls_fragment': {'enabled': true, 'size': '10-30', 'sleep': '5-10'},
+    },
+    // v5: block و dns-out أصبحوا rule actions — لا نضيفهم كـ outbounds
   ];
 
   // ------------------------------------------------------------
