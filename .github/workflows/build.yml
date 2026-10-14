@@ -28,38 +28,11 @@ jobs:
         flutter-version: '3.27.4'
         cache: true
 
-    - name: Download hiddify-core AAR
+    # ── نحذف الـ placeholder عشان build.gradle.kts يتكفل بالتحميل ──
+    - name: Remove placeholder AAR
       run: |
         rm -f android/app/libs/hiddify-core.aar
-        mkdir -p android/app/libs
-
-        # جرب كل أسماء الملفات الممكنة في v4
-        CORE_VERSION="v4.7.0"
-        URLS=(
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/libcore.aar"
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/Libcore.aar"
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core.aar"
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-libcore.aar"
-        )
-
-        for URL in "${URLS[@]}"; do
-          echo "Trying: $URL"
-          curl -L --retry 2 -w "%{http_code}" -o android/app/libs/hiddify-core.aar "$URL" 2>/dev/null
-          SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
-          echo " | Size: $SIZE"
-          if [ "$SIZE" -gt 1000000 ]; then
-            echo "✅ Got it from: $URL"
-            break
-          fi
-        done
-
-        # لو كل شيء فشل، اعرض الأصول الموجودة
-        SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
-        if [ "$SIZE" -lt 1000000 ]; then
-          echo "❌ All failed. Available assets:"
-          curl -s "https://api.github.com/repos/hiddify/hiddify-core/releases/tags/${CORE_VERSION}" | grep '"browser_download_url"'
-          exit 1
-        fi
+        echo "Placeholder removed - build.gradle.kts will download the real AAR"
 
     - name: Update Gradle version
       run: |
