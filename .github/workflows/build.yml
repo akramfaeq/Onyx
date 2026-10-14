@@ -35,35 +35,35 @@ jobs:
         rm -f android/app/libs/hiddify-core.aar
         mkdir -p android/app/libs
 
-        # جيب أحدث إصدار
         CORE_VERSION=$(curl -s https://api.github.com/repos/hiddify/hiddify-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
         echo "Core version: $CORE_VERSION"
 
-        # جرب الأسماء المختلفة للـ AAR
-        URLS=(
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar"
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/libcore-android.aar"
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-libcore-android.aar"
-        )
+        # v5+ يستخدم tar.gz بدل .aar مباشرة
+        URL="https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-lib-android.tar.gz"
+        echo "Downloading: $URL"
 
-        for URL in "${URLS[@]}"; do
-          echo "Trying: $URL"
-          HTTP_CODE=$(curl -L --retry 3 -w "%{http_code}" -o android/app/libs/hiddify-core.aar "$URL")
-          SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
-          echo "HTTP: $HTTP_CODE | Size: $SIZE bytes"
-          if [ "$SIZE" -gt 1000000 ]; then
-            echo "✅ Downloaded successfully from: $URL"
-            break
-          fi
-        done
+        curl -L --retry 3 -o /tmp/hiddify-lib-android.tar.gz "$URL"
 
-        # تحقق نهائي
+        # فك الضغط
+        tar -xzf /tmp/hiddify-lib-android.tar.gz -C /tmp/
+
+        # دور على الـ .aar
+        AAR_FILE=$(find /tmp -name "*.aar" | head -1)
+        echo "Found AAR: $AAR_FILE"
+
+        if [ -z "$AAR_FILE" ]; then
+          echo "No .aar found, listing extracted files:"
+          find /tmp -name "*android*" -o -name "*.aar" -o -name "*.jar"
+          exit 1
+        fi
+
+        cp "$AAR_FILE" android/app/libs/hiddify-core.aar
+
         SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
+        echo "✅ AAR size: $SIZE bytes"
+
         if [ "$SIZE" -lt 1000000 ]; then
-          echo "❌ All download attempts failed!"
-          # اعرض كل الأصول الموجودة في الـ release
-          echo "Available assets in $CORE_VERSION:"
-          curl -s "https://api.github.com/repos/hiddify/hiddify-core/releases/latest" | grep '"browser_download_url"'
+          echo "❌ AAR too small!"
           exit 1
         fi
 
