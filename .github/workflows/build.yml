@@ -4,8 +4,6 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
-  schedule:
-    - cron: '0 9 * * 1'
 
 permissions:
   contents: write
@@ -30,42 +28,26 @@ jobs:
         flutter-version: '3.27.4'
         cache: true
 
-    - name: Download hiddify-core AAR
+    # ── نثبّت v4.7.0 لأنه يدعم .aar مباشرة ──
+    - name: Download hiddify-core AAR (v4)
       run: |
         rm -f android/app/libs/hiddify-core.aar
         mkdir -p android/app/libs
 
-        CORE_VERSION=$(curl -s https://api.github.com/repos/hiddify/hiddify-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-        echo "Core version: $CORE_VERSION"
+        CORE_VERSION="v4.7.0"
+        URL="https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar"
+        echo "Downloading hiddify-core $CORE_VERSION"
 
-        # v5+ يستخدم tar.gz بدل .aar مباشرة
-        URL="https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-lib-android.tar.gz"
-        echo "Downloading: $URL"
-
-        curl -L --retry 3 -o /tmp/hiddify-lib-android.tar.gz "$URL"
-
-        # فك الضغط
-        tar -xzf /tmp/hiddify-lib-android.tar.gz -C /tmp/
-
-        # دور على الـ .aar
-        AAR_FILE=$(find /tmp -name "*.aar" | head -1)
-        echo "Found AAR: $AAR_FILE"
-
-        if [ -z "$AAR_FILE" ]; then
-          echo "No .aar found, listing extracted files:"
-          find /tmp -name "*android*" -o -name "*.aar" -o -name "*.jar"
-          exit 1
-        fi
-
-        cp "$AAR_FILE" android/app/libs/hiddify-core.aar
+        curl -L --retry 3 -o android/app/libs/hiddify-core.aar "$URL"
 
         SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
-        echo "✅ AAR size: $SIZE bytes"
+        echo "AAR size: $SIZE bytes"
 
         if [ "$SIZE" -lt 1000000 ]; then
-          echo "❌ AAR too small!"
+          echo "❌ Download failed!"
           exit 1
         fi
+        echo "✅ hiddify-core.aar ready"
 
     - name: Update Gradle version
       run: |
@@ -97,5 +79,5 @@ jobs:
         name: "OnyxVPN v1.0.${{ github.run_number }}"
         body: |
           🚀 OnyxVPN Auto Build
-          🤖 Built from latest hiddify-core
+          🤖 Built with hiddify-core v4.7.0
         files: build/app/outputs/flutter-apk/app-release.apk
