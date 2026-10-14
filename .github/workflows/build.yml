@@ -32,7 +32,6 @@ jobs:
 
     - name: Download hiddify-core AAR
       run: |
-        # احذف الـ placeholder الفاضي أولاً
         rm -f android/app/libs/hiddify-core.aar
         mkdir -p android/app/libs
 
@@ -40,19 +39,33 @@ jobs:
         CORE_VERSION=$(curl -s https://api.github.com/repos/hiddify/hiddify-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
         echo "Core version: $CORE_VERSION"
 
-        # نزّل الـ AAR
-        curl -L --retry 3 \
-          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar" \
-          -o android/app/libs/hiddify-core.aar
+        # جرب الأسماء المختلفة للـ AAR
+        URLS=(
+          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar"
+          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/libcore-android.aar"
+          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-libcore-android.aar"
+        )
 
-        # تأكد الحجم صح (لازم أكبر من 1MB)
+        for URL in "${URLS[@]}"; do
+          echo "Trying: $URL"
+          HTTP_CODE=$(curl -L --retry 3 -w "%{http_code}" -o android/app/libs/hiddify-core.aar "$URL")
+          SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
+          echo "HTTP: $HTTP_CODE | Size: $SIZE bytes"
+          if [ "$SIZE" -gt 1000000 ]; then
+            echo "✅ Downloaded successfully from: $URL"
+            break
+          fi
+        done
+
+        # تحقق نهائي
         SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
-        echo "AAR size: $SIZE bytes"
         if [ "$SIZE" -lt 1000000 ]; then
-          echo "ERROR: AAR file is too small! Download failed."
+          echo "❌ All download attempts failed!"
+          # اعرض كل الأصول الموجودة في الـ release
+          echo "Available assets in $CORE_VERSION:"
+          curl -s "https://api.github.com/repos/hiddify/hiddify-core/releases/latest" | grep '"browser_download_url"'
           exit 1
         fi
-        echo "✅ hiddify-core.aar downloaded successfully ($SIZE bytes)"
 
     - name: Update Gradle version
       run: |
