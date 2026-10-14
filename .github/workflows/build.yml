@@ -30,15 +30,29 @@ jobs:
         flutter-version: '3.27.4'
         cache: true
 
-    # ─── تحميل hiddify-core.aar من GitHub ───────────────────────
     - name: Download hiddify-core AAR
       run: |
-        CORE_VERSION=$(curl -s https://api.github.com/repos/hiddify/hiddify-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-        echo "Downloading hiddify-core $CORE_VERSION"
+        # احذف الـ placeholder الفاضي أولاً
+        rm -f android/app/libs/hiddify-core.aar
         mkdir -p android/app/libs
-        curl -L "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar" \
+
+        # جيب أحدث إصدار
+        CORE_VERSION=$(curl -s https://api.github.com/repos/hiddify/hiddify-core/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+        echo "Core version: $CORE_VERSION"
+
+        # نزّل الـ AAR
+        curl -L --retry 3 \
+          "https://github.com/hiddify/hiddify-core/releases/download/${CORE_VERSION}/hiddify-core-android.aar" \
           -o android/app/libs/hiddify-core.aar
-        ls -lh android/app/libs/hiddify-core.aar
+
+        # تأكد الحجم صح (لازم أكبر من 1MB)
+        SIZE=$(stat -c%s android/app/libs/hiddify-core.aar)
+        echo "AAR size: $SIZE bytes"
+        if [ "$SIZE" -lt 1000000 ]; then
+          echo "ERROR: AAR file is too small! Download failed."
+          exit 1
+        fi
+        echo "✅ hiddify-core.aar downloaded successfully ($SIZE bytes)"
 
     - name: Update Gradle version
       run: |
